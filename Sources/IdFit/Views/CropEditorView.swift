@@ -134,6 +134,12 @@ struct CropEditorView: View {
                 .foregroundStyle(.secondary)
                 .font(.callout)
             } else {
+                Button("Detect Edges") {
+                    if let page {
+                        Task { await store.redetectEdges(forPageIDs: [page.id]) }
+                    }
+                }
+                .disabled(store.isDetectingEdges)
                 Button("Reset Crop") {
                     if let page { store.resetCrop(forPageID: page.id) }
                 }
@@ -143,6 +149,13 @@ struct CropEditorView: View {
                 .disabled(page?.crop == nil)
             }
             Spacer()
+            if store.isDetectingEdges {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Finding edges…").foregroundStyle(.secondary)
+                }
+                .font(.callout)
+            }
         }
         .padding(12)
     }

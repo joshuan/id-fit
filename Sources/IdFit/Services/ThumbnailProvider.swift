@@ -16,16 +16,21 @@ final class ThumbnailProvider: @unchecked Sendable {
     }
 
     func thumbnail(for ref: SourceRef, in folder: URL, maxPixel: CGFloat = 512) async -> CGImage? {
+        await Task.detached(priority: .utility) { [self] in
+            renderedImage(for: ref, in: folder, maxPixel: maxPixel)
+        }.value
+    }
+
+    /// Blocking variant for callers that are already off the main thread, such
+    /// as edge detection.
+    func renderedImage(for ref: SourceRef, in folder: URL, maxPixel: CGFloat) -> CGImage? {
         let key = SourceCacheKey.make(for: ref, in: folder, variant: "\(Int(maxPixel))")
         if let cached = cache.object(forKey: key) { return cached }
 
         let url = folder.appendingPathComponent(ref.file)
-        let image = await Task.detached(priority: .utility) {
-            if url.pathExtension.lowercased() == "pdf" {
-                return Self.pdfThumbnail(url: url, pageIndex: ref.pdfPage ?? 0, maxPixel: maxPixel)
-            }
-            return Self.imageThumbnail(url: url, maxPixel: maxPixel)
-        }.value
+        let image = url.pathExtension.lowercased() == "pdf"
+            ? Self.pdfThumbnail(url: url, pageIndex: ref.pdfPage ?? 0, maxPixel: maxPixel)
+            : Self.imageThumbnail(url: url, maxPixel: maxPixel)
 
         if let image { cache.setObject(image, forKey: key) }
         return image

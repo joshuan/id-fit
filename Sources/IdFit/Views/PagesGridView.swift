@@ -38,9 +38,16 @@ struct PagesGridView: View {
         .navigationTitle(store.folderName)
         .toolbar {
             ToolbarItem(placement: .status) {
-                Text("\(store.state.pages.count) pages")
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                if store.isDetectingEdges {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Finding edges…").foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("\(store.state.pages.count) pages")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
             }
             ToolbarItem {
                 AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
@@ -53,6 +60,11 @@ struct PagesGridView: View {
             }
             ToolbarItem {
                 Menu {
+                    Button("Detect Edges on All Pages") {
+                        Task { await store.redetectEdgesOnAllPages() }
+                    }
+                    .disabled(store.isDetectingEdges)
+                    Divider()
                     Button("Export Cropped Files to Folder…") {
                         Task { await store.runFileExportFlow() }
                     }

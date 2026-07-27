@@ -98,9 +98,21 @@ final class DocumentStore {
                 }
                 return sizes
             }.value
+            // Decide before normalizing: normalizing hands every page a
+            // centered crop, which would hide the pages that still need a
+            // suggestion.
+            let needingDetection = state.pages
+                .filter { !$0.autoDetected && $0.crop == nil }
+                .map(\.id)
+
             normalizeCropsToSharedRatio()
             if state != loaded {
                 try StateStore.save(state, to: url)
+            }
+
+            detectionTask?.cancel()
+            detectionTask = Task { [weak self] in
+                await self?.detectEdges(forPageIDs: needingDetection)
             }
         } catch {
             // A corrupt state file must never be silently overwritten — the
@@ -161,6 +173,96 @@ final class DocumentStore {
         guard state.pages.count != before else { return }
         missingSources = []
         scheduleSave()
+    }
+
+    // MARK: - Edge detection
+
+    private(set) var isDetectingEdges = false
+    @ObservationIgnored private var detectionTask: Task<Void, Never>?
+
+    /// Re-runs detection for pages the user asks about, ignoring whether they
+    /// were analysed before.
+    func redetectEdges(forPageIDs ids: [UUID]) async {
+        detectionTask?.cancel()
+        await detectEdges(forPageIDs: ids)
+    }
+
+    func redetectEdgesOnAllPages() async {
+        await redetectEdges(forPageIDs: state.pages.map(\.id))
+    }
+
+    private func detectEdges(forPageIDs ids: [UUID]) async {
+        guard let folderURL, !ids.isEmpty else { return }
+        isDetectingEdges = true
+        defer { isDetectingEdges = false }
+
+        let targets = state.pages.filter { ids.contains($0.id) }
+        // Remember what each crop looked like: anything the user changes while
+        // detection is running must win over the suggestion.
+        let before = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0.crop) })
+
+        let detections = await Task.detached(priority: .utility) {
+            var found: [(id: UUID, crop: CropRect)] = []
+            for page in targets {
+                if Task.isCancelled { break }
+                if let crop = DocumentEdgeDetector.detect(for: page.source, in: folderURL) {
+                    found.append((page.id, crop))
+                }
+            }
+            return found
+        }.value
+
+        guard !Task.isCancelled else { return }
+        apply(detections, replacingUnchanged: before)
+    }
+
+    private func apply(_ detections: [(id: UUID, crop: CropRect)], replacingUnchanged before: [UUID: CropRect?]) {
+        // Every page that was looked at counts as offered, found or not.
+        for index in state.pages.indices where before.keys.contains(state.pages[index].id) {
+            state.pages[index].autoDetected = true
+        }
+
+        // Work out which suggestions are still welcome before touching any
+        // crops, since setting the ratio rewrites them all.
+        let welcome = detections.filter { detection in
+            guard let page = state.pages.first(where: { $0.id == detection.id }),
+                  let snapshot = before[detection.id] else { return false }
+            return page.crop == snapshot
+        }
+
+        if state.cropAspectRatio == nil,
+           let first = welcome.first,
+           let page = state.pages.first(where: { $0.id == first.id }),
+           let ratio = aspectRatio(of: first.crop, on: page) {
+            // Nothing chosen yet: let the shape of the first document found
+            // set the ratio for the whole batch.
+            setAspectRatio(ratio)
+        }
+
+        if let ratio = state.cropAspectRatio {
+            for detection in welcome {
+                guard let index = state.pages.firstIndex(where: { $0.id == detection.id }),
+                      let size = sourceSizes[state.pages[index].source] else { continue }
+                state.pages[index].crop = CropGeometry.refit(
+                    detection.crop,
+                    outputRatio: ratio.ratio,
+                    sourceSize: size,
+                    rotation: state.pages[index].rotation
+                )
+            }
+        }
+        scheduleSave()
+    }
+
+    /// Expresses a crop's exported proportions as an aspect ratio.
+    private func aspectRatio(of crop: CropRect, on page: Page) -> AspectRatio? {
+        guard let size = sourceSizes[page.source] else { return nil }
+        let width = (crop.width * size.width).rounded()
+        let height = (crop.height * size.height).rounded()
+        guard width > 0, height > 0 else { return nil }
+        return page.rotation % 180 == 0
+            ? AspectRatio(width: width, height: height)
+            : AspectRatio(width: height, height: width)
     }
 
     // MARK: - Cropping

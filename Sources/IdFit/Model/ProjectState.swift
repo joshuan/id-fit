@@ -49,12 +49,23 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// Clockwise degrees: 0, 90, 180 or 270.
     var rotation: Int
     var crop: CropRect?
+    /// Whether edge detection has already been offered for this page. Kept so
+    /// that a deliberate "no crop" is not undone by re-detecting on every
+    /// open, while a scan added later still gets its suggestion.
+    var autoDetected: Bool
 
-    init(id: UUID = UUID(), source: SourceRef, rotation: Int = 0, crop: CropRect? = nil) {
+    init(
+        id: UUID = UUID(),
+        source: SourceRef,
+        rotation: Int = 0,
+        crop: CropRect? = nil,
+        autoDetected: Bool = false
+    ) {
         self.id = id
         self.source = source
         self.rotation = rotation
         self.crop = crop
+        self.autoDetected = autoDetected
     }
 
     init(from decoder: Decoder) throws {
@@ -63,6 +74,7 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.source = try container.decode(SourceRef.self, forKey: .source)
         self.rotation = try container.decodeIfPresent(Int.self, forKey: .rotation) ?? 0
         self.crop = try container.decodeIfPresent(CropRect.self, forKey: .crop)
+        self.autoDetected = try container.decodeIfPresent(Bool.self, forKey: .autoDetected) ?? false
     }
 }
 

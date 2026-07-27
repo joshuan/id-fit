@@ -10,7 +10,8 @@ You scanned your passport and ended up with 20 files — some A4, some re-scanne
 
 - **Opens a folder** of scans — JPEG, PNG, TIFF, HEIC and PDF. Each page of a PDF becomes a separate page you can reorder and crop on its own.
 - **Reorders pages** by dragging: the card follows the cursor and the others slide aside to open a gap.
-- **Crops each page individually, with one aspect ratio shared by the whole document**, so the export comes out uniform even when the sources differ in size and DPI. Presets for A4, US Letter, ID card, passport photo and square, plus a custom ratio.
+- **Finds the document in each scan by itself** and proposes a crop, which you then nudge. Uses the Vision framework built into macOS, so nothing is sent anywhere and there is nothing to install. Suggestions that would cover almost the whole scan are discarded rather than shaving a sliver off a page that needed no cropping.
+- **Crops each page individually, with one aspect ratio shared by the whole document**, so the export comes out uniform even when the sources differ in size and DPI. Presets for A4, US Letter, ID card, passport photo and square, plus a custom ratio — or just drag a rectangle on a page and its shape becomes the ratio for all of them.
 - **Rotates pages** in 90° steps.
 - **Exports to PDF** — pages in your order, crops applied, at full resolution. PDF sources stay vector rather than being rasterized. Choose A4, US Letter, or a page that fits the content exactly.
 - **Remembers everything in `.id-fit.json` inside the folder.** No absolute paths, nothing stored elsewhere: sync the folder to another computer, open it there, and the order and crops are exactly as you left them.
