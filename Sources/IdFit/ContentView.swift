@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -16,6 +17,26 @@ struct ContentView: View {
             if case .success(let url) = result {
                 Task { await store.openFolder(url) }
             }
+        }
+        .alert(
+            "Export finished",
+            isPresented: Binding(
+                get: { store.lastExport != nil },
+                set: { if !$0 { store.clearLastExport() } }
+            ),
+            presenting: store.lastExport
+        ) { export in
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([export.url])
+                store.clearLastExport()
+            }
+            Button("OK", role: .cancel) { store.clearLastExport() }
+        } message: { export in
+            var text = "\(export.result.exportedPages) pages written to \(export.url.lastPathComponent)."
+            if !export.result.skippedPages.isEmpty {
+                text += "\n\nSkipped (files missing): \(export.result.skippedPages.joined(separator: ", "))"
+            }
+            return Text(text)
         }
         .task {
             // Dev convenience: `open IdFit.app --args /path/to/folder`.

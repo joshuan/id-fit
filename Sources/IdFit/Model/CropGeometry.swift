@@ -20,6 +20,21 @@ enum CropGeometry {
         return normalized % 180 == 0 ? outputRatio : 1 / outputRatio
     }
 
+    /// Maps a crop expressed on the unrotated source into the coordinates of
+    /// the same source rotated clockwise by `degrees`.
+    static func rotated(_ crop: CropRect, by degrees: Int) -> CropRect {
+        switch ((degrees % 360) + 360) % 360 {
+        case 90:
+            CropRect(x: 1 - crop.y - crop.height, y: crop.x, width: crop.height, height: crop.width)
+        case 180:
+            CropRect(x: 1 - crop.x - crop.width, y: 1 - crop.y - crop.height, width: crop.width, height: crop.height)
+        case 270:
+            CropRect(x: crop.y, y: 1 - crop.x - crop.width, width: crop.height, height: crop.width)
+        default:
+            crop
+        }
+    }
+
     static func pixelRect(_ crop: CropRect, sourceSize: CGSize) -> CGRect {
         CGRect(
             x: crop.x * sourceSize.width,

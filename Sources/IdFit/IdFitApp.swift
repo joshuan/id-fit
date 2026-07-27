@@ -16,6 +16,13 @@ struct IdFitApp: App {
                 Button("Open Folder…") { store.isPickingFolder = true }
                     .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(replacing: .importExport) {
+                Button("Export PDF…") {
+                    Task { await store.runExportFlow() }
+                }
+                .keyboardShortcut("e", modifiers: .command)
+                .disabled(store.folderURL == nil || store.state.pages.isEmpty || store.isExporting)
+            }
         }
     }
 }

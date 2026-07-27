@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct PagesGridView: View {
-    let store: DocumentStore
+    @Bindable var store: DocumentStore
 
     @State private var drag: DragState?
     @State private var cellFrames: [UUID: CGRect] = [:]
@@ -37,6 +37,12 @@ struct PagesGridView: View {
             }
             ToolbarItem { aspectRatioMenu }
             ToolbarItem {
+                Button("Export PDF…", systemImage: "square.and.arrow.up") {
+                    Task { await store.runExportFlow() }
+                }
+                .disabled(store.state.pages.isEmpty || store.isExporting)
+            }
+            ToolbarItem {
                 Button("Open Folder…", systemImage: "folder") {
                     store.isPickingFolder = true
                 }
@@ -48,6 +54,13 @@ struct PagesGridView: View {
         .sheet(isPresented: $isEditingCustomRatio) {
             CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
                 store.setAspectRatio(ratio)
+            }
+        }
+        .overlay {
+            if store.isExporting {
+                ProgressView("Exporting…")
+                    .padding(24)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
     }

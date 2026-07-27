@@ -17,8 +17,10 @@ final class DocumentStore {
     private(set) var lastError: String?
     private(set) var hasUnsavedChanges = false
 
-    /// Drives the folder picker; settable from menu commands and views.
+    /// Drive the folder picker from menu commands as well as from the views.
     var isPickingFolder = false
+    /// Remembered between exports in the same session.
+    var preferredPaper: PDFExporter.Paper = .a4
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
@@ -132,6 +134,56 @@ final class DocumentStore {
             )
         }
         scheduleSave()
+    }
+
+    // MARK: - Export
+
+    private(set) var isExporting = false
+    /// Set after a successful export so the UI can offer to reveal the file.
+    private(set) var lastExport: (url: URL, result: PDFExporter.Result)?
+
+    /// Asks for a destination, then writes the PDF.
+    func runExportFlow() async {
+        guard let folderURL, !state.pages.isEmpty else { return }
+        let missing = state.pages.filter { missingSources.contains($0.source) }.count
+        guard let choice = ExportPanel.run(
+            defaultName: suggestedExportName,
+            directory: folderURL.deletingLastPathComponent(),
+            pageCount: state.pages.count - missing,
+            missingCount: missing,
+            paper: preferredPaper
+        ) else { return }
+
+        preferredPaper = choice.paper
+        await exportPDF(to: choice.url, paper: choice.paper)
+    }
+
+    func exportPDF(to destination: URL, paper: PDFExporter.Paper) async {
+        guard let folderURL else { return }
+        isExporting = true
+        defer { isExporting = false }
+        lastError = nil
+        lastExport = nil
+
+        let pages = state.pages
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try PDFExporter.export(pages: pages, folder: folderURL, to: destination, paper: paper)
+            }.value
+            lastExport = (destination, result)
+        } catch {
+            lastError = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func clearLastExport() {
+        lastExport = nil
+    }
+
+    /// A sensible default file name for the export panel.
+    var suggestedExportName: String {
+        let base = folderName.isEmpty ? "Scans" : folderName
+        return "\(base).pdf"
     }
 
     // MARK: - Saving

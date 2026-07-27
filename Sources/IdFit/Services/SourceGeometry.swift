@@ -32,6 +32,20 @@ final class SourceGeometry: @unchecked Sendable {
         return nil
     }
 
+    /// Resolution used to turn pixels into print size. Scans without
+    /// resolution metadata are assumed to be 300 dpi, the usual scanner
+    /// default; PDF content is already in points.
+    func dpi(for ref: SourceRef, in folder: URL) -> Double {
+        let url = folder.appendingPathComponent(ref.file)
+        guard url.pathExtension.lowercased() != "pdf" else { return 72 }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let dpi = properties[kCGImagePropertyDPIWidth] as? Double,
+              dpi > 0
+        else { return 300 }
+        return dpi
+    }
+
     private static func imageSize(url: URL) -> CGSize? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
