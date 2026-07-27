@@ -75,11 +75,21 @@ struct ProjectState: Codable, Equatable, Sendable {
     var version: Int
     var cropAspectRatio: AspectRatio?
     var pages: [Page]
+    /// Files this app wrote into the working folder — exported PDFs. They are
+    /// skipped when scanning, so an export saved next to the scans does not
+    /// come back as a stack of new pages.
+    var exportedFiles: [String]
 
-    init(version: Int = Self.currentVersion, cropAspectRatio: AspectRatio? = nil, pages: [Page] = []) {
+    init(
+        version: Int = Self.currentVersion,
+        cropAspectRatio: AspectRatio? = nil,
+        pages: [Page] = [],
+        exportedFiles: [String] = []
+    ) {
         self.version = version
         self.cropAspectRatio = cropAspectRatio
         self.pages = pages
+        self.exportedFiles = exportedFiles
     }
 
     init(from decoder: Decoder) throws {
@@ -87,6 +97,7 @@ struct ProjectState: Codable, Equatable, Sendable {
         self.version = try container.decodeIfPresent(Int.self, forKey: .version) ?? Self.currentVersion
         self.cropAspectRatio = try container.decodeIfPresent(AspectRatio.self, forKey: .cropAspectRatio)
         self.pages = try container.decodeIfPresent([Page].self, forKey: .pages) ?? []
+        self.exportedFiles = try container.decodeIfPresent([String].self, forKey: .exportedFiles) ?? []
     }
 
     /// Merges the state with the sources currently present in the folder:

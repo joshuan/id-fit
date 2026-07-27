@@ -44,6 +44,17 @@ enum CropGeometry {
         return normalized % 180 == 0 ? width / height : height / width
     }
 
+    /// Where a given corner of the crop sits, in source pixels.
+    static func cornerPoint(_ corner: Corner, of crop: CropRect, sourceSize: CGSize) -> CGPoint {
+        let rect = pixelRect(crop, sourceSize: sourceSize)
+        return switch corner {
+        case .topLeft: CGPoint(x: rect.minX, y: rect.minY)
+        case .topRight: CGPoint(x: rect.maxX, y: rect.minY)
+        case .bottomLeft: CGPoint(x: rect.minX, y: rect.maxY)
+        case .bottomRight: CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+    }
+
     static func pixelRect(_ crop: CropRect, sourceSize: CGSize) -> CGRect {
         CGRect(
             x: crop.x * sourceSize.width,

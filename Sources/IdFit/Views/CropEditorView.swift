@@ -11,6 +11,7 @@ struct CropEditorView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var preview: CGImage?
+    @State private var isEditingCustomRatio = false
 
     private var page: Page? {
         store.state.pages.indices.contains(pageIndex) ? store.state.pages[pageIndex] : nil
@@ -31,7 +32,12 @@ struct CropEditorView: View {
             footer
         }
         .frame(minWidth: 760, minHeight: 580)
-        .task(id: page) { await loadPreview() }
+        .task(id: page.map(PagePreviewKey.init)) { await loadPreview() }
+        .sheet(isPresented: $isEditingCustomRatio) {
+            CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
+                store.setAspectRatio(ratio)
+            }
+        }
     }
 
     private var header: some View {
@@ -66,6 +72,9 @@ struct CropEditorView: View {
 
             Spacer()
 
+            AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
+                .fixedSize()
+
             Button {
                 if let page { store.rotatePage(id: page.id, by: -90) }
             } label: {
@@ -93,10 +102,14 @@ struct CropEditorView: View {
                 image: preview,
                 displayedSize: size,
                 crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
-                outputRatio: store.state.cropAspectRatio?.ratio
-            ) { edited in
-                store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
-            }
+                outputRatio: store.state.cropAspectRatio?.ratio,
+                onChange: { edited in
+                    store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
+                },
+                onDraw: { drawn in
+                    store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
+                }
+            )
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let page, store.missingSources.contains(page.source) {
@@ -114,9 +127,12 @@ struct CropEditorView: View {
     private var footer: some View {
         HStack {
             if store.state.cropAspectRatio == nil {
-                Label("Choose an aspect ratio to start cropping.", systemImage: "info.circle")
-                    .foregroundStyle(.secondary)
-                    .font(.callout)
+                Label(
+                    "Drag on the page to draw a crop — its shape becomes the ratio for every page. Or pick a preset above.",
+                    systemImage: "hand.draw"
+                )
+                .foregroundStyle(.secondary)
+                .font(.callout)
             } else {
                 Button("Reset Crop") {
                     if let page { store.resetCrop(forPageID: page.id) }
@@ -151,10 +167,14 @@ private struct CropCanvas: View {
     let crop: CropRect?
     let outputRatio: Double?
     let onChange: (CropRect) -> Void
+    /// Called with a freehand rectangle when no ratio has been chosen yet.
+    let onDraw: (CropRect) -> Void
 
     @State private var gestureStart: CropRect?
+    @State private var drawnRect: CGRect?
 
     private let handleSize: CGFloat = 14
+    private let hitSize: CGFloat = 32
 
     var body: some View {
         GeometryReader { geometry in
@@ -165,6 +185,26 @@ private struct CropCanvas: View {
                     .resizable()
                     .frame(width: frame.width, height: frame.height)
                     .offset(x: frame.minX, y: frame.minY)
+
+                if outputRatio == nil {
+                    // Nothing to frame yet: let the user draw the shape that
+                    // will define the ratio for the whole document.
+                    Color.white.opacity(0.001)
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: frame.minX, y: frame.minY)
+                        .contentShape(Rectangle())
+                        .pointerStyle(.rectSelection)
+                        .gesture(drawGesture(frame: frame))
+
+                    if let drawnRect {
+                        Rectangle()
+                            .strokeBorder(.white, style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                            .background(Rectangle().fill(.white.opacity(0.12)))
+                            .frame(width: drawnRect.width, height: drawnRect.height)
+                            .offset(x: frame.minX + drawnRect.minX, y: frame.minY + drawnRect.minY)
+                            .allowsHitTesting(false)
+                    }
+                }
 
                 if let crop, outputRatio != nil {
                     let rect = viewRect(for: crop, in: frame)
@@ -184,6 +224,7 @@ private struct CropCanvas: View {
                         .frame(width: rect.width, height: rect.height)
                         .offset(x: rect.minX, y: rect.minY)
                         .contentShape(Rectangle())
+                        .pointerStyle(.grabIdle)
                         .gesture(moveGesture(crop: crop, frame: frame))
 
                     ForEach(CropGeometry.Corner.allCases, id: \.self) { corner in
@@ -192,7 +233,12 @@ private struct CropCanvas: View {
                             .fill(.white)
                             .overlay(Circle().strokeBorder(.black.opacity(0.4), lineWidth: 1))
                             .frame(width: handleSize, height: handleSize)
-                            .offset(x: point.x - handleSize / 2, y: point.y - handleSize / 2)
+                            // A generous invisible target around the dot, so
+                            // the corner is easy to grab.
+                            .frame(width: hitSize, height: hitSize)
+                            .contentShape(Rectangle())
+                            .pointerStyle(.frameResize(position: resizePosition(for: corner)))
+                            .offset(x: point.x - hitSize / 2, y: point.y - hitSize / 2)
                             .gesture(resizeGesture(corner: corner, crop: crop, frame: frame))
                     }
                 }
@@ -201,6 +247,36 @@ private struct CropCanvas: View {
     }
 
     // MARK: - Gestures
+
+    /// Attached to a layer that exactly covers the image, so these locations
+    /// are already relative to the image's top-left corner.
+    private func drawGesture(frame: CGRect) -> some Gesture {
+        let bounds = CGRect(origin: .zero, size: frame.size)
+        return DragGesture(minimumDistance: 4)
+            .onChanged { value in
+                drawnRect = rectangle(from: value.startLocation, to: value.location, clampedTo: bounds)
+            }
+            .onEnded { value in
+                let rect = rectangle(from: value.startLocation, to: value.location, clampedTo: bounds)
+                drawnRect = nil
+                // Ignore stray clicks that would produce a degenerate ratio.
+                guard rect.width > frame.width * 0.05, rect.height > frame.height * 0.05 else { return }
+                onDraw(CropRect(
+                    x: rect.minX / frame.width,
+                    y: rect.minY / frame.height,
+                    width: rect.width / frame.width,
+                    height: rect.height / frame.height
+                ).clampedToUnitSquare())
+            }
+    }
+
+    private func rectangle(from start: CGPoint, to end: CGPoint, clampedTo frame: CGRect) -> CGRect {
+        let minX = min(max(min(start.x, end.x), frame.minX), frame.maxX)
+        let maxX = min(max(max(start.x, end.x), frame.minX), frame.maxX)
+        let minY = min(max(min(start.y, end.y), frame.minY), frame.maxY)
+        let maxY = min(max(max(start.y, end.y), frame.minY), frame.maxY)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
 
     private func moveGesture(crop: CropRect, frame: CGRect) -> some Gesture {
         DragGesture()
@@ -216,15 +292,21 @@ private struct CropCanvas: View {
             .onEnded { _ in gestureStart = nil }
     }
 
+    /// Tracked by how far the pointer moved rather than where it is: a
+    /// gesture's `location` is reported in the coordinate space of the view it
+    /// is attached to — here the small handle — while `translation` is a plain
+    /// delta and needs no conversion. Using the former made the corner jump.
     private func resizeGesture(corner: CropGeometry.Corner, crop: CropRect, frame: CGRect) -> some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
                 guard let outputRatio else { return }
                 let start = gestureStart ?? crop
                 if gestureStart == nil { gestureStart = crop }
+
+                let origin = CropGeometry.cornerPoint(corner, of: start, sourceSize: displayedSize)
                 let point = CGPoint(
-                    x: (value.location.x - frame.minX) / frame.width * displayedSize.width,
-                    y: (value.location.y - frame.minY) / frame.height * displayedSize.height
+                    x: origin.x + value.translation.width * (displayedSize.width / frame.width),
+                    y: origin.y + value.translation.height * (displayedSize.height / frame.height)
                 )
                 onChange(CropGeometry.resized(
                     start,
@@ -257,6 +339,15 @@ private struct CropCanvas: View {
             width: crop.width * frame.width,
             height: crop.height * frame.height
         )
+    }
+
+    private func resizePosition(for corner: CropGeometry.Corner) -> FrameResizePosition {
+        switch corner {
+        case .topLeft: .topLeading
+        case .topRight: .topTrailing
+        case .bottomLeft: .bottomLeading
+        case .bottomRight: .bottomTrailing
+        }
     }
 
     private func handlePosition(corner: CropGeometry.Corner, in rect: CGRect) -> CGPoint {

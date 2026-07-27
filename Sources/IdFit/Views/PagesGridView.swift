@@ -42,7 +42,9 @@ struct PagesGridView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            ToolbarItem { aspectRatioMenu }
+            ToolbarItem {
+                AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
+            }
             ToolbarItem {
                 Button("Export PDF…", systemImage: "square.and.arrow.up") {
                     Task { await store.runExportFlow() }
@@ -247,95 +249,12 @@ struct PagesGridView: View {
         return best?.index
     }
 
-    // MARK: - Aspect ratio
-
-    private var aspectRatioMenu: some View {
-        Menu {
-            ForEach(AspectRatioPreset.allCases) { preset in
-                Button {
-                    store.setAspectRatio(preset.aspectRatio)
-                } label: {
-                    if currentPreset == preset {
-                        Label(preset.title, systemImage: "checkmark")
-                    } else {
-                        Text(preset.title)
-                    }
-                }
-            }
-            Divider()
-            Button("Custom…") { isEditingCustomRatio = true }
-        } label: {
-            Label(ratioLabel, systemImage: "aspectratio")
-        }
-        .help("Crop aspect ratio, shared by all pages")
-    }
-
     private var hasEdits: Bool {
         store.state.pages.contains { $0.crop != nil || $0.rotation != 0 }
     }
 
-    private var currentPreset: AspectRatioPreset? {
-        AspectRatioPreset.matching(store.state.cropAspectRatio)
-    }
-
-    private var ratioLabel: String {
-        if let currentPreset { return currentPreset.title }
-        guard let ratio = store.state.cropAspectRatio else { return AspectRatioPreset.original.title }
-        return "Custom (\(formatted(ratio.width)) × \(formatted(ratio.height)))"
-    }
-
-    private func formatted(_ value: Double) -> String {
-        value == value.rounded() ? String(Int(value)) : String(format: "%.2f", value)
-    }
-
     struct EditorTarget: Identifiable {
         let id: Int
-    }
-}
-
-private struct CustomRatioSheet: View {
-    let current: AspectRatio?
-    let onApply: (AspectRatio) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var width: Double
-    @State private var height: Double
-
-    init(current: AspectRatio?, onApply: @escaping (AspectRatio) -> Void) {
-        self.current = current
-        self.onApply = onApply
-        _width = State(initialValue: current?.width ?? 210)
-        _height = State(initialValue: current?.height ?? 297)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Custom Aspect Ratio")
-                .font(.headline)
-            HStack {
-                TextField("Width", value: $width, format: .number)
-                    .frame(width: 90)
-                Text("×")
-                TextField("Height", value: $height, format: .number)
-                    .frame(width: 90)
-            }
-            .textFieldStyle(.roundedBorder)
-            Text("Only the proportion matters, not the units.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Apply") {
-                    onApply(AspectRatio(width: width, height: height))
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(width <= 0 || height <= 0)
-            }
-        }
-        .padding(20)
-        .frame(width: 320)
     }
 }
 
@@ -347,13 +266,6 @@ struct PageCell: View {
     let isMissing: Bool
 
     @State private var thumbnail: CGImage?
-
-    /// Reloading is keyed on source and rotation only, so dragging a crop
-    /// handle does not re-render thumbnails.
-    private struct ThumbnailKey: Hashable {
-        let source: SourceRef
-        let rotation: Int
-    }
 
     private var caption: String {
         if let pdfPage = page.source.pdfPage {
@@ -408,7 +320,7 @@ struct PageCell: View {
                 .truncationMode(.middle)
         }
         .contentShape(Rectangle())
-        .task(id: ThumbnailKey(source: page.source, rotation: page.rotation)) {
+        .task(id: PagePreviewKey(page)) {
             guard !isMissing else { return }
             guard let image = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder) else { return }
             thumbnail = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)

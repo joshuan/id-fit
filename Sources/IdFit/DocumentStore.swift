@@ -21,7 +21,7 @@ final class DocumentStore {
     /// Drive the folder picker from menu commands as well as from the views.
     var isPickingFolder = false
     /// Remembered between exports in the same session.
-    var preferredPaper: PDFExporter.Paper = .a4
+    var preferredPaper: PDFExporter.Paper = .fitContent
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
@@ -55,6 +55,9 @@ final class DocumentStore {
 
         do {
             let loaded = try StateStore.load(from: url) ?? ProjectState()
+            // Our own exports live in the folder but are not pages of it.
+            let generated = Set(loaded.exportedFiles)
+            let discovered = discovered.filter { !generated.contains($0.file) }
             let reconciled = loaded.reconciled(with: discovered)
             folderURL = url
             state = reconciled
@@ -183,6 +186,28 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    /// Takes the shape the user just drew on one page and makes it the
+    /// document's ratio — the natural way to crop a document that matches no
+    /// preset. The drawn rectangle is given in the page's rotated space.
+    func defineAspectRatio(fromDrawnCrop crop: CropRect, onPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let size = sourceSizes[state.pages[index].source] else { return }
+        let rotation = state.pages[index].rotation
+        let displayed = rotation % 180 == 0
+            ? size
+            : CGSize(width: size.height, height: size.width)
+
+        let width = (crop.width * displayed.width).rounded()
+        let height = (crop.height * displayed.height).rounded()
+        guard width > 0, height > 0 else { return }
+
+        // Every other page gets a centered crop of the new ratio…
+        setAspectRatio(AspectRatio(width: width, height: height))
+        // …while this one keeps exactly the framing that defined it.
+        state.pages[index].crop = CropGeometry.rotated(crop, by: -rotation)
+        scheduleSave()
+    }
+
     func setCrop(_ crop: CropRect, forPageID id: UUID) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].crop != crop else { return }
@@ -227,7 +252,7 @@ final class DocumentStore {
         let missing = state.pages.filter { missingSources.contains($0.source) }.count
         guard let choice = ExportPanel.run(
             defaultName: suggestedExportName,
-            directory: folderURL.deletingLastPathComponent(),
+            directory: folderURL,
             pageCount: state.pages.count - missing,
             missingCount: missing,
             paper: preferredPaper
@@ -249,10 +274,28 @@ final class DocumentStore {
             let result = try await Task.detached(priority: .userInitiated) {
                 try PDFExporter.export(pages: pages, folder: folderURL, to: destination, paper: paper)
             }.value
+            rememberExportInsideFolder(destination)
             lastExport = (destination, result)
         } catch {
             lastError = "Export failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Saving the PDF next to the scans is the obvious thing to do, so the
+    /// file has to be remembered — otherwise the next scan of the folder would
+    /// read the export back in as a fresh stack of pages.
+    private func rememberExportInsideFolder(_ destination: URL) {
+        guard let folderURL else { return }
+        let parent = destination.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath().path
+        let root = folderURL.standardizedFileURL.resolvingSymlinksInPath().path
+        guard parent == root else { return }
+
+        let name = destination.lastPathComponent
+        guard !state.exportedFiles.contains(name) else { return }
+        state.exportedFiles.append(name)
+        hasUnsavedChanges = true
+        saveImmediately()
     }
 
     func clearLastExport() {
