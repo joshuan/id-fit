@@ -40,14 +40,19 @@ enum OriginalsWriter {
                 continue
             }
             do {
+                let applied: [UUID]
                 if url.pathExtension.lowercased() == "pdf" {
                     try applyToPDF(at: url, pages: filePages, backupFolder: backupFolder)
+                    applied = filePages.map(\.id)
                 } else {
+                    // An image file backs exactly one page; only that page's
+                    // edits end up baked in.
                     guard let page = filePages.first else { continue }
                     try applyToImage(at: url, page: page, folder: folder, backupFolder: backupFolder)
+                    applied = [page.id]
                 }
                 result.changedFiles.append(file)
-                result.appliedPageIDs.formUnion(filePages.map(\.id))
+                result.appliedPageIDs.formUnion(applied)
             } catch {
                 result.failures.append(file)
             }

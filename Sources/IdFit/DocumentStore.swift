@@ -68,13 +68,40 @@ final class DocumentStore {
                 }
                 return sizes
             }.value
-            if reconciled != loaded {
-                try StateStore.save(reconciled, to: url)
+            normalizeCropsToSharedRatio()
+            if state != loaded {
+                try StateStore.save(state, to: url)
             }
         } catch {
             // A corrupt state file must never be silently overwritten — the
             // user may have edits from another machine in it.
             lastError = "Could not open folder: \(error.localizedDescription)"
+        }
+    }
+
+    /// Makes sure every page really does export at the shared ratio.
+    ///
+    /// Two cases need it on open: a scan added to the folder after the ratio
+    /// was chosen has no crop at all, and a page whose file was missing when
+    /// the ratio last changed still carries its old shape. Either one would
+    /// break the uniform export the ratio exists to guarantee.
+    private func normalizeCropsToSharedRatio() {
+        guard let ratio = state.cropAspectRatio else { return }
+        for index in state.pages.indices {
+            let page = state.pages[index]
+            guard let size = sourceSizes[page.source] else { continue }
+
+            guard let crop = page.crop else {
+                state.pages[index].crop = CropGeometry.centeredCrop(
+                    outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                )
+                continue
+            }
+            let actual = CropGeometry.exportedRatio(crop, sourceSize: size, rotation: page.rotation)
+            guard abs(actual - ratio.ratio) > 0.001 else { continue }
+            state.pages[index].crop = CropGeometry.refit(
+                crop, outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+            )
         }
     }
 

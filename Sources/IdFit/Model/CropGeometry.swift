@@ -35,6 +35,15 @@ enum CropGeometry {
         }
     }
 
+    /// The width/height ratio this crop will actually produce once exported.
+    static func exportedRatio(_ crop: CropRect, sourceSize: CGSize, rotation: Int = 0) -> Double {
+        let width = crop.width * sourceSize.width
+        let height = crop.height * sourceSize.height
+        guard width > 0, height > 0 else { return 0 }
+        let normalized = ((rotation % 360) + 360) % 360
+        return normalized % 180 == 0 ? width / height : height / width
+    }
+
     static func pixelRect(_ crop: CropRect, sourceSize: CGSize) -> CGRect {
         CGRect(
             x: crop.x * sourceSize.width,

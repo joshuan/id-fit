@@ -48,7 +48,8 @@ final class SourceGeometry: @unchecked Sendable {
               let dpi = properties[kCGImagePropertyDPIWidth] as? Double,
               dpi > 0
         else { return 300 }
-        return dpi
+        // Nonsense metadata would otherwise produce a page metres wide.
+        return min(max(dpi, 24), 2400)
     }
 
     private static func imageSize(url: URL) -> CGSize? {
