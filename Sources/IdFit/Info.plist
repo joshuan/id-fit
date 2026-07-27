@@ -24,5 +24,18 @@
 	<string>15.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>ID Fit Page Reference</string>
+			<key>UTTypeIdentifier</key>
+			<string>net.shershnev.id-fit.page</string>
+		</dict>
+	</array>
 </dict>
 </plist>

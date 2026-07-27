@@ -21,6 +21,10 @@ targets:
         CFBundleDisplayName: ID Fit
         LSMinimumSystemVersion: "15.0"
         NSHighResolutionCapable: true
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: net.shershnev.id-fit.page
+            UTTypeDescription: ID Fit Page Reference
+            UTTypeConformsTo: [public.data]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.shershnev.id-fit

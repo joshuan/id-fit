@@ -3,6 +3,8 @@ import SwiftUI
 struct PagesGridView: View {
     let store: DocumentStore
 
+    @State private var dropTarget: UUID?
+
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
 
     var body: some View {
@@ -15,9 +17,26 @@ struct PagesGridView: View {
                         folder: store.folderURL!,
                         isMissing: store.missingSources.contains(page.source)
                     )
+                    .draggable(PageDragPayload(pageID: page.id)) {
+                        DragPreview(number: index + 1)
+                    }
+                    .dropDestination(for: PageDragPayload.self) { payloads, _ in
+                        guard let payload = payloads.first else { return false }
+                        store.movePage(id: payload.pageID, toIndex: index)
+                        return true
+                    } isTargeted: { targeted in
+                        dropTarget = targeted ? page.id : (dropTarget == page.id ? nil : dropTarget)
+                    }
+                    .overlay {
+                        if dropTarget == page.id {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.accentColor, lineWidth: 3)
+                        }
+                    }
                 }
             }
             .padding()
+            .animation(.snappy(duration: 0.2), value: store.state.pages.map(\.id))
         }
         .overlay {
             if store.isLoading {
@@ -43,6 +62,18 @@ struct PagesGridView: View {
                 }
             }
         }
+    }
+}
+
+private struct DragPreview: View {
+    let number: Int
+
+    var body: some View {
+        Text("Page \(number)")
+            .font(.callout.bold())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -103,6 +134,7 @@ struct PageCell: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+        .contentShape(Rectangle())
         .task(id: page.source) {
             guard !isMissing else { return }
             thumbnail = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder)

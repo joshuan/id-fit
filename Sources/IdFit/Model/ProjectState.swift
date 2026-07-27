@@ -106,4 +106,14 @@ struct ProjectState: Codable, Equatable, Sendable {
     func missingSources(given discovered: [SourceRef]) -> Set<SourceRef> {
         Set(pages.map(\.source)).subtracting(discovered)
     }
+
+    /// Moves the page with the given id so that it ends up at `targetIndex`.
+    /// Out-of-range targets are clamped; unknown ids are ignored.
+    mutating func movePage(id: UUID, toIndex targetIndex: Int) {
+        guard let from = pages.firstIndex(where: { $0.id == id }) else { return }
+        let target = min(max(targetIndex, 0), pages.count - 1)
+        guard from != target else { return }
+        let page = pages.remove(at: from)
+        pages.insert(page, at: target)
+    }
 }
