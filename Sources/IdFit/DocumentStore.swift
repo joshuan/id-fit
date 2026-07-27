@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 
@@ -9,6 +10,9 @@ final class DocumentStore {
     private(set) var folderURL: URL?
     private(set) var state = ProjectState()
     private(set) var missingSources: Set<SourceRef> = []
+    /// Displayed pixel size of every readable source, prefetched on open so
+    /// that crop math stays synchronous.
+    private(set) var sourceSizes: [SourceRef: CGSize] = [:]
     private(set) var isLoading = false
     private(set) var lastError: String?
     private(set) var hasUnsavedChanges = false
@@ -39,6 +43,13 @@ final class DocumentStore {
             state = reconciled
             missingSources = reconciled.missingSources(given: discovered)
             hasUnsavedChanges = false
+            sourceSizes = await Task.detached(priority: .userInitiated) {
+                var sizes: [SourceRef: CGSize] = [:]
+                for ref in discovered {
+                    sizes[ref] = SourceGeometry.shared.size(for: ref, in: url)
+                }
+                return sizes
+            }.value
             if reconciled != loaded {
                 try StateStore.save(reconciled, to: url)
             }
@@ -55,6 +66,71 @@ final class DocumentStore {
         let before = state.pages.map(\.id)
         state.movePage(id: id, toIndex: index)
         guard state.pages.map(\.id) != before else { return }
+        scheduleSave()
+    }
+
+    // MARK: - Cropping
+
+    /// The crop ratio is shared by the whole document, so changing it
+    /// reshapes every page: pages already cropped keep their framing and are
+    /// refitted, the rest get a maximal centered crop. Passing nil clears all
+    /// crops (export uses the full pages).
+    func setAspectRatio(_ ratio: AspectRatio?) {
+        state.cropAspectRatio = ratio
+
+        guard let ratio else {
+            for index in state.pages.indices {
+                state.pages[index].crop = nil
+            }
+            scheduleSave()
+            return
+        }
+
+        for index in state.pages.indices {
+            let page = state.pages[index]
+            guard let size = sourceSizes[page.source] else { continue }
+            if let existing = page.crop {
+                state.pages[index].crop = CropGeometry.refit(
+                    existing, outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                )
+            } else {
+                state.pages[index].crop = CropGeometry.centeredCrop(
+                    outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                )
+            }
+        }
+        scheduleSave()
+    }
+
+    func setCrop(_ crop: CropRect, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              state.pages[index].crop != crop else { return }
+        state.pages[index].crop = crop
+        scheduleSave()
+    }
+
+    func resetCrop(forPageID id: UUID) {
+        guard let ratio = state.cropAspectRatio,
+              let index = state.pages.firstIndex(where: { $0.id == id }),
+              let size = sourceSizes[state.pages[index].source] else { return }
+        state.pages[index].crop = CropGeometry.centeredCrop(
+            outputRatio: ratio.ratio, sourceSize: size, rotation: state.pages[index].rotation
+        )
+        scheduleSave()
+    }
+
+    /// Copies one page's framing onto every page — handy when scans are
+    /// aligned the same way. Each page is refitted to the shared ratio, so
+    /// sources of different pixel sizes still export uniformly.
+    func applyCropToAllPages(fromPageID id: UUID) {
+        guard let ratio = state.cropAspectRatio,
+              let template = state.pages.first(where: { $0.id == id })?.crop else { return }
+        for index in state.pages.indices {
+            guard let size = sourceSizes[state.pages[index].source] else { continue }
+            state.pages[index].crop = CropGeometry.refit(
+                template, outputRatio: ratio.ratio, sourceSize: size, rotation: state.pages[index].rotation
+            )
+        }
         scheduleSave()
     }
 
