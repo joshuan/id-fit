@@ -29,6 +29,19 @@ targets:
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         NSHumanReadableCopyright: ""
+        # Lets Finder offer ID Fit under "Open With" for folders, and lets the
+        # command line tool hand a folder over with `open -b`.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Folder of Scans
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.folder]
+        NSServices:
+          - NSMenuItem:
+              default: Open Folder in ID Fit
+            NSMessage: openFolder
+            NSPortName: ID Fit
+            NSSendFileTypes: [public.folder]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.shershnev.id-fit

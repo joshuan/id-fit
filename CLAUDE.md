@@ -23,6 +23,12 @@ Layout: app code in `Sources/IdFit/`, tests in `Tests/IdFitTests/`.
 
 To open the app straight onto a folder while developing: `open build/Build/Products/Debug/IdFit.app --args /path/to/folder`.
 
+The Finder Services entry and *Open With* rely on LaunchServices knowing the bundle. A Debug build is not registered automatically, so after changing `NSServices` or `CFBundleDocumentTypes` run:
+
+```sh
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f build/Build/Products/Debug/IdFit.app
+```
+
 ## Architecture
 
 `DocumentStore` (`@MainActor @Observable`) is the single source of truth: it owns the open folder, the `ProjectState`, and every mutation. Views never touch the file system; services never touch app state.
@@ -33,6 +39,7 @@ To open the app straight onto a folder while developing: `open build/Build/Produ
 - **PDF handling** — PDF pages are read and drawn through their **crop box**, not the media box. Applying a crop to an original PDF narrows its crop box, so the app must read the same box back or it would show the page uncropped and crop it a second time.
 - **Caching** — `SourceGeometry` and `ThumbnailProvider` are singletons whose keys include the folder path and the file's modification date (`SourceCacheKey`), so same-named files in different folders and files changed by cloud sync don't collide.
 - **After applying to originals** the crops in state are cleared and caches invalidated — otherwise the next export would crop the already-cropped file again.
+- **Opening from outside** (command line tool, Services menu, *Open With*) all funnel through `AppDelegate` into `DocumentStore.openFolderOrParent(of:)`. A URL can arrive before the window exists, so the delegate buffers it until the store is attached; `openFolder` serializes overlapping requests, since a restored session and a command line folder can otherwise interleave.
 
 ## Testing approach
 

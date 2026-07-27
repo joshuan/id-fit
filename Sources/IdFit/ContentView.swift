@@ -60,6 +60,18 @@ struct ContentView: View {
             }
             return Text(text)
         }
+        .alert(
+            "Command Line Tool Installed",
+            isPresented: Binding(
+                get: { store.commandLineNotice != nil },
+                set: { if !$0 { store.clearCommandLineNotice() } }
+            ),
+            presenting: store.commandLineNotice
+        ) { _ in
+            Button("OK", role: .cancel) { store.clearCommandLineNotice() }
+        } message: { notice in
+            Text(notice)
+        }
         .task {
             // Dev convenience: `open IdFit.app --args /path/to/folder`.
             if let path = CommandLine.arguments.dropFirst().first {

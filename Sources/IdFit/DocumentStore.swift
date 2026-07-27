@@ -43,7 +43,34 @@ final class DocumentStore {
         await openFolder(URL(fileURLWithPath: path, isDirectory: true))
     }
 
+    /// Opens whatever the URL points at: a folder directly, a file by way of
+    /// the folder holding it. Used by the command line tool, the Services menu
+    /// and Finder's "Open With".
+    func openFolderOrParent(of url: URL) async {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            lastError = "There is nothing at \(url.path)."
+            return
+        }
+        await openFolder(isDirectory.boolValue ? url : url.deletingLastPathComponent())
+    }
+
+    /// Opens run one at a time: requests can arrive from several places at
+    /// once (a restored session and a folder passed on the command line), and
+    /// interleaving them would mix one folder's pages with another's sizes.
     func openFolder(_ url: URL) async {
+        let previous = openTask
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.performOpen(url)
+        }
+        openTask = task
+        await task.value
+    }
+
+    @ObservationIgnored private var openTask: Task<Void, Never>?
+
+    private func performOpen(_ url: URL) async {
         saveImmediately()
         isLoading = true
         defer { isLoading = false }
@@ -300,6 +327,26 @@ final class DocumentStore {
 
     func clearLastExport() {
         lastExport = nil
+    }
+
+    // MARK: - Command line tool
+
+    private(set) var commandLineNotice: String?
+
+    func noteCommandLineInstalled(at url: URL, isLikelyOnPath: Bool) {
+        var text = "The “\(url.lastPathComponent)” command was installed at \(url.path).\n\nRun it with a folder: \(url.lastPathComponent) ~/Scans"
+        if !isLikelyOnPath {
+            text += "\n\nThat folder may not be on your PATH — add it to your shell profile to call the command by name."
+        }
+        commandLineNotice = text
+    }
+
+    func clearCommandLineNotice() {
+        commandLineNotice = nil
+    }
+
+    func report(error message: String) {
+        lastError = message
     }
 
     /// Writes the edited pages as separate files into a folder the user picks.

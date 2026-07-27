@@ -20,6 +20,13 @@ Two explicit, separate actions can touch files:
 - **Export cropped files to a folder** — writes each page as its own file, numbered in page order, into a folder you pick (never the one you are editing).
 - **Apply changes to original files** — rewrites the sources with their crops baked in. Confirmed by a dialog, and untouched copies are kept in `.id-fit-originals/` unless you opt out. Images are re-encoded in their original format; PDFs are cropped through their crop box, so they stay vector and lose no pages.
 
+## Opening a folder
+
+Besides **File → Open Folder…** and dropping a folder on the window:
+
+- **From Finder** — right-click a folder and choose *Open With → ID Fit*, or *Services → Open Folder in ID Fit*.
+- **From a terminal** — choose *ID Fit → Install Command Line Tool…* once, then `idfit ~/Scans` (or `idfit .`). The command works whether or not the app is already running, and points at the app by bundle identifier, so moving or updating the app does not break it.
+
 ## Requirements
 
 macOS 15 or later.
