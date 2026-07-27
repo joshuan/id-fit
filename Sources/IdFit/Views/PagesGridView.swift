@@ -7,6 +7,7 @@ struct PagesGridView: View {
     @State private var cellFrames: [UUID: CGRect] = [:]
     @State private var editorTarget: EditorTarget?
     @State private var isEditingCustomRatio = false
+    @State private var isConfirmingApply = false
 
     private static let boardSpace = "board"
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
@@ -43,6 +44,21 @@ struct PagesGridView: View {
                 .disabled(store.state.pages.isEmpty || store.isExporting)
             }
             ToolbarItem {
+                Menu {
+                    Button("Export Cropped Files to Folder…") {
+                        Task { await store.runFileExportFlow() }
+                    }
+                    Divider()
+                    Button("Apply Changes to Original Files…", role: .destructive) {
+                        isConfirmingApply = true
+                    }
+                    .disabled(!hasEdits)
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .disabled(store.state.pages.isEmpty || store.isExporting)
+            }
+            ToolbarItem {
                 Button("Open Folder…", systemImage: "folder") {
                     store.isPickingFolder = true
                 }
@@ -55,6 +71,9 @@ struct PagesGridView: View {
             CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
                 store.setAspectRatio(ratio)
             }
+        }
+        .sheet(isPresented: $isConfirmingApply) {
+            ApplyToOriginalsSheet(store: store)
         }
         .overlay {
             if store.isExporting {
@@ -216,6 +235,10 @@ struct PagesGridView: View {
             Label(ratioLabel, systemImage: "aspectratio")
         }
         .help("Crop aspect ratio, shared by all pages")
+    }
+
+    private var hasEdits: Bool {
+        store.state.pages.contains { $0.crop != nil || $0.rotation != 0 }
     }
 
     private var currentPreset: AspectRatioPreset? {

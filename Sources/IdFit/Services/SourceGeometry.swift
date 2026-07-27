@@ -11,6 +11,11 @@ final class SourceGeometry: @unchecked Sendable {
 
     private let cache = NSCache<NSString, NSValue>()
 
+    /// Call after source files change on disk.
+    func invalidate() {
+        cache.removeAllObjects()
+    }
+
     /// Cheap: reads image headers only, never decodes pixels. Safe to call
     /// off the main thread.
     func size(for ref: SourceRef, in folder: URL) -> CGSize? {
@@ -63,7 +68,10 @@ final class SourceGeometry: @unchecked Sendable {
     private static func pdfPageSize(url: URL, pageIndex: Int) -> CGSize? {
         guard let document = PDFDocument(url: url),
               let page = document.page(at: pageIndex) else { return nil }
-        let bounds = page.bounds(for: .mediaBox)
+        // The crop box is what viewers show, and it is how a crop applied to
+        // the original file is recorded — so it, not the media box, defines
+        // the page as the user sees it.
+        let bounds = page.bounds(for: .cropBox)
         return page.rotation % 180 == 0
             ? bounds.size
             : CGSize(width: bounds.height, height: bounds.width)

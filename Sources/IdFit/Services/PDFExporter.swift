@@ -177,7 +177,7 @@ enum PDFExporter {
             context.saveGState()
             context.clip(to: rect)
             context.concatenate(
-                pdfPage.getDrawingTransform(.mediaBox, rect: target, rotate: Int32(rotation), preserveAspectRatio: true)
+                pdfPage.getDrawingTransform(.cropBox, rect: target, rotate: Int32(rotation), preserveAspectRatio: true)
             )
             context.drawPDFPage(pdfPage)
             context.restoreGState()

@@ -38,6 +38,28 @@ struct ContentView: View {
             }
             return Text(text)
         }
+        .alert(
+            "Changes applied",
+            isPresented: Binding(
+                get: { store.lastApplyResult != nil },
+                set: { if !$0 { store.clearLastApplyResult() } }
+            ),
+            presenting: store.lastApplyResult
+        ) { result in
+            if let backup = result.backupFolder {
+                Button("Show Backups") {
+                    NSWorkspace.shared.activateFileViewerSelecting([backup])
+                    store.clearLastApplyResult()
+                }
+            }
+            Button("OK", role: .cancel) { store.clearLastApplyResult() }
+        } message: { result in
+            var text = "\(result.changedFiles.count) file(s) rewritten with the crop applied."
+            if result.backupFolder != nil {
+                text += "\n\nUntouched copies are in \(OriginalsWriter.backupFolderName)."
+            }
+            return Text(text)
+        }
         .task {
             // Dev convenience: `open IdFit.app --args /path/to/folder`.
             if let path = CommandLine.arguments.dropFirst().first {

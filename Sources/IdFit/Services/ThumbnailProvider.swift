@@ -10,6 +10,11 @@ final class ThumbnailProvider: @unchecked Sendable {
 
     private let cache = NSCache<NSString, CGImage>()
 
+    /// Call after source files change on disk.
+    func invalidate() {
+        cache.removeAllObjects()
+    }
+
     func thumbnail(for ref: SourceRef, in folder: URL, maxPixel: CGFloat = 512) async -> CGImage? {
         let key = "\(ref.file)#\(ref.pdfPage ?? -1)#\(Int(maxPixel))" as NSString
         if let cached = cache.object(forKey: key) { return cached }
@@ -41,11 +46,11 @@ final class ThumbnailProvider: @unchecked Sendable {
     private static func pdfThumbnail(url: URL, pageIndex: Int, maxPixel: CGFloat) -> CGImage? {
         guard let document = PDFDocument(url: url),
               let page = document.page(at: pageIndex) else { return nil }
-        let bounds = page.bounds(for: .mediaBox)
+        let bounds = page.bounds(for: .cropBox)
         guard bounds.width > 0, bounds.height > 0 else { return nil }
         let scale = maxPixel / max(bounds.width, bounds.height)
         let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        let image = page.thumbnail(of: size, for: .mediaBox)
+        let image = page.thumbnail(of: size, for: .cropBox)
         var rect = CGRect(origin: .zero, size: image.size)
         return image.cgImage(forProposedRect: &rect, context: nil, hints: nil)
     }

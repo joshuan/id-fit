@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 import Observation
@@ -178,6 +179,94 @@ final class DocumentStore {
 
     func clearLastExport() {
         lastExport = nil
+    }
+
+    /// Writes the edited pages as separate files into a folder the user picks.
+    func runFileExportFlow() async {
+        guard let folderURL, !state.pages.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Export Cropped Files"
+        panel.message = "Choose a folder for the exported files."
+        panel.prompt = "Export"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = folderURL.deletingLastPathComponent()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+
+        isExporting = true
+        defer { isExporting = false }
+        lastError = nil
+
+        let pages = state.pages
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try FileExporter.export(pages: pages, folder: folderURL, to: destination)
+            }.value
+            lastExport = (destination, PDFExporter.Result(
+                exportedPages: result.writtenFiles.count,
+                skippedPages: result.skippedPages
+            ))
+        } catch {
+            lastError = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Applying to the originals
+
+    /// The single destructive action in the app: rewrites the source files
+    /// with their crops and rotations baked in. Only ever called after an
+    /// explicit confirmation.
+    func applyToOriginals(makeBackup: Bool) async {
+        guard let folderURL else { return }
+        isExporting = true
+        defer { isExporting = false }
+        lastError = nil
+
+        let pages = state.pages
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try OriginalsWriter.apply(pages: pages, folder: folderURL, makeBackup: makeBackup)
+            }.value
+
+            // The files now contain the crop, so keeping it in the state
+            // would apply it a second time on the next export.
+            for index in state.pages.indices where result.appliedPageIDs.contains(state.pages[index].id) {
+                state.pages[index].crop = nil
+                state.pages[index].rotation = 0
+            }
+
+            ThumbnailProvider.shared.invalidate()
+            SourceGeometry.shared.invalidate()
+            await reloadSourceSizes()
+            hasUnsavedChanges = true
+            saveImmediately()
+
+            if !result.failures.isEmpty {
+                lastError = "Some files could not be updated: \(result.failures.joined(separator: ", "))"
+            }
+            lastApplyResult = result
+        } catch {
+            lastError = "Could not apply changes: \(error.localizedDescription)"
+        }
+    }
+
+    private(set) var lastApplyResult: OriginalsWriter.Result?
+
+    func clearLastApplyResult() {
+        lastApplyResult = nil
+    }
+
+    private func reloadSourceSizes() async {
+        guard let folderURL else { return }
+        let refs = state.pages.map(\.source)
+        sourceSizes = await Task.detached(priority: .userInitiated) {
+            var sizes: [SourceRef: CGSize] = [:]
+            for ref in refs {
+                sizes[ref] = SourceGeometry.shared.size(for: ref, in: folderURL)
+            }
+            return sizes
+        }.value
     }
 
     /// A sensible default file name for the export panel.
