@@ -1,0 +1,46 @@
+name: IdFit
+options:
+  bundleIdPrefix: net.shershnev
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+targets:
+  IdFit:
+    type: application
+    platform: macOS
+    sources: [Sources/IdFit]
+    info:
+      path: Sources/IdFit/Info.plist
+      properties:
+        CFBundleName: ID Fit
+        CFBundleDisplayName: ID Fit
+        LSMinimumSystemVersion: "15.0"
+        NSHighResolutionCapable: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.shershnev.id-fit
+        ENABLE_HARDENED_RUNTIME: NO
+  IdFitTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Tests/IdFitTests]
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: IdFit
+schemes:
+  IdFit:
+    build:
+      targets:
+        IdFit: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets: [IdFitTests]
