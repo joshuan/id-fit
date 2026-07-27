@@ -16,7 +16,7 @@ final class ThumbnailProvider: @unchecked Sendable {
     }
 
     func thumbnail(for ref: SourceRef, in folder: URL, maxPixel: CGFloat = 512) async -> CGImage? {
-        let key = "\(ref.file)#\(ref.pdfPage ?? -1)#\(Int(maxPixel))" as NSString
+        let key = SourceCacheKey.make(for: ref, in: folder, variant: "\(Int(maxPixel))")
         if let cached = cache.object(forKey: key) { return cached }
 
         let url = folder.appendingPathComponent(ref.file)

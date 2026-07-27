@@ -67,8 +67,10 @@ struct ContentView: View {
                 if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
                    isDirectory.boolValue {
                     await store.openFolder(URL(fileURLWithPath: path, isDirectory: true))
+                    return
                 }
             }
+            await store.restoreLastSession()
         }
     }
 }

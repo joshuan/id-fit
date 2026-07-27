@@ -2,6 +2,9 @@ import SwiftUI
 
 /// Full-page crop editor. The aspect ratio is fixed document-wide, so the
 /// user only frames the content; the rectangle can never change shape.
+///
+/// Everything here works in the page's *rotated* space — what the export will
+/// look like — and crops are converted back to source space on the way out.
 struct CropEditorView: View {
     let store: DocumentStore
     @State var pageIndex: Int
@@ -13,6 +16,12 @@ struct CropEditorView: View {
         store.state.pages.indices.contains(pageIndex) ? store.state.pages[pageIndex] : nil
     }
 
+    /// Source size as seen after rotation.
+    private var displayedSize: CGSize? {
+        guard let page, let size = store.sourceSizes[page.source] else { return nil }
+        return page.rotation % 180 == 0 ? size : CGSize(width: size.height, height: size.width)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -21,8 +30,8 @@ struct CropEditorView: View {
             Divider()
             footer
         }
-        .frame(minWidth: 720, minHeight: 560)
-        .task(id: page?.source) { await loadPreview() }
+        .frame(minWidth: 760, minHeight: 580)
+        .task(id: page) { await loadPreview() }
     }
 
     private var header: some View {
@@ -49,13 +58,27 @@ struct CropEditorView: View {
                 Text("Page \(pageIndex + 1) of \(store.state.pages.count)")
                     .font(.headline)
                 if let page {
-                    Text(page.source.pdfPage.map { "\(page.source.file) · p\($0 + 1)" } ?? page.source.file)
+                    Text(page.source.displayName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Spacer()
+
+            Button {
+                if let page { store.rotatePage(id: page.id, by: -90) }
+            } label: {
+                Label("Rotate Left", systemImage: "rotate.left")
+            }
+            .keyboardShortcut("[", modifiers: .command)
+
+            Button {
+                if let page { store.rotatePage(id: page.id, by: 90) }
+            } label: {
+                Label("Rotate Right", systemImage: "rotate.right")
+            }
+            .keyboardShortcut("]", modifiers: .command)
 
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
@@ -65,15 +88,14 @@ struct CropEditorView: View {
 
     @ViewBuilder
     private var canvas: some View {
-        if let page, let size = store.sourceSizes[page.source], let preview {
+        if let page, let size = displayedSize, let preview {
             CropCanvas(
                 image: preview,
-                sourceSize: size,
-                crop: page.crop,
-                outputRatio: store.state.cropAspectRatio?.ratio,
-                rotation: page.rotation
-            ) { newCrop in
-                store.setCrop(newCrop, forPageID: page.id)
+                displayedSize: size,
+                crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
+                outputRatio: store.state.cropAspectRatio?.ratio
+            ) { edited in
+                store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
             }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -112,19 +134,22 @@ struct CropEditorView: View {
     private func loadPreview() async {
         preview = nil
         guard let page, let folder = store.folderURL else { return }
-        preview = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder, maxPixel: 1600)
+        guard let image = await ThumbnailProvider.shared.thumbnail(
+            for: page.source, in: folder, maxPixel: 1600
+        ) else { return }
+        // Rotate once here rather than on every redraw.
+        preview = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)
     }
 }
 
 /// Draws the page with a dimmed area outside the crop and drag handles on the
-/// corners. All editing happens in source-pixel space and is converted to
-/// normalized coordinates on the way out.
+/// corners. Editing happens in the page's rotated pixel space, which is the
+/// same space the exported image lives in.
 private struct CropCanvas: View {
     let image: CGImage
-    let sourceSize: CGSize
+    let displayedSize: CGSize
     let crop: CropRect?
     let outputRatio: Double?
-    let rotation: Int
     let onChange: (CropRect) -> Void
 
     @State private var gestureStart: CropRect?
@@ -182,12 +207,11 @@ private struct CropCanvas: View {
             .onChanged { value in
                 let start = gestureStart ?? crop
                 if gestureStart == nil { gestureStart = crop }
-                let scale = sourceSize.width / frame.width
                 let delta = CGSize(
-                    width: value.translation.width * scale,
-                    height: value.translation.height * (sourceSize.height / frame.height)
+                    width: value.translation.width * (displayedSize.width / frame.width),
+                    height: value.translation.height * (displayedSize.height / frame.height)
                 )
-                onChange(CropGeometry.moved(start, byPixels: delta, sourceSize: sourceSize))
+                onChange(CropGeometry.moved(start, byPixels: delta, sourceSize: displayedSize))
             }
             .onEnded { _ in gestureStart = nil }
     }
@@ -199,16 +223,15 @@ private struct CropCanvas: View {
                 let start = gestureStart ?? crop
                 if gestureStart == nil { gestureStart = crop }
                 let point = CGPoint(
-                    x: (value.location.x - frame.minX) / frame.width * sourceSize.width,
-                    y: (value.location.y - frame.minY) / frame.height * sourceSize.height
+                    x: (value.location.x - frame.minX) / frame.width * displayedSize.width,
+                    y: (value.location.y - frame.minY) / frame.height * displayedSize.height
                 )
                 onChange(CropGeometry.resized(
                     start,
                     corner: corner,
                     toPixelPoint: point,
                     outputRatio: outputRatio,
-                    sourceSize: sourceSize,
-                    rotation: rotation
+                    sourceSize: displayedSize
                 ))
             }
             .onEnded { _ in gestureStart = nil }
@@ -217,8 +240,8 @@ private struct CropCanvas: View {
     // MARK: - Layout helpers
 
     private func fittedImageFrame(in container: CGSize) -> CGRect {
-        let scale = min(container.width / sourceSize.width, container.height / sourceSize.height)
-        let size = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+        let scale = min(container.width / displayedSize.width, container.height / displayedSize.height)
+        let size = CGSize(width: displayedSize.width * scale, height: displayedSize.height * scale)
         return CGRect(
             x: (container.width - size.width) / 2,
             y: (container.height - size.height) / 2,

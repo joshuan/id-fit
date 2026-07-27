@@ -13,9 +13,15 @@ struct PagesGridView: View {
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
 
     var body: some View {
-        ZStack {
-            grid
-            floatingCard
+        VStack(spacing: 0) {
+            if !store.missingSources.isEmpty {
+                missingBanner
+                Divider()
+            }
+            ZStack {
+                grid
+                floatingCard
+            }
         }
         .coordinateSpace(.named(Self.boardSpace))
         .overlay {
@@ -84,6 +90,25 @@ struct PagesGridView: View {
         }
     }
 
+    private var missingBanner: some View {
+        HStack {
+            Label(
+                "\(missingPageCount) page(s) can't find their file. Their edits are kept in case the folder is still syncing.",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.callout)
+            Spacer()
+            Button("Remove Them") { store.removeMissingPages() }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.15))
+    }
+
+    private var missingPageCount: Int {
+        store.state.pages.filter { store.missingSources.contains($0.source) }.count
+    }
+
     private var grid: some View {
         ScrollView {
             LazyVGrid(columns: columns, spacing: 16) {
@@ -123,9 +148,17 @@ struct PagesGridView: View {
         .onTapGesture(count: 2) { editorTarget = EditorTarget(id: index) }
         .contextMenu {
             Button("Crop…") { editorTarget = EditorTarget(id: index) }
+            Divider()
+            Button("Rotate Left") { store.rotatePage(id: page.id, by: -90) }
+            Button("Rotate Right") { store.rotatePage(id: page.id, by: 90) }
+            Divider()
             Button("Move to Front") { store.movePage(id: page.id, toIndex: 0) }
             Button("Move to Back") {
                 store.movePage(id: page.id, toIndex: store.state.pages.count - 1)
+            }
+            if store.missingSources.contains(page.source) {
+                Divider()
+                Button("Remove Page", role: .destructive) { store.removePage(id: page.id) }
             }
         }
         .gesture(dragGesture(for: page))
@@ -315,6 +348,13 @@ struct PageCell: View {
 
     @State private var thumbnail: CGImage?
 
+    /// Reloading is keyed on source and rotation only, so dragging a crop
+    /// handle does not re-render thumbnails.
+    private struct ThumbnailKey: Hashable {
+        let source: SourceRef
+        let rotation: Int
+    }
+
     private var caption: String {
         if let pdfPage = page.source.pdfPage {
             return "\(page.source.file) · p\(pdfPage + 1)"
@@ -328,10 +368,14 @@ struct PageCell: View {
                 RoundedRectangle(cornerRadius: 8)
                     .fill(.quaternary.opacity(0.5))
                 if let thumbnail {
-                    // Show the page as it will be exported, crop included.
-                    CroppedImage(image: thumbnail, crop: page.crop, outputRatio: outputRatio)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .padding(4)
+                    // Show the page as it will be exported: rotated, cropped.
+                    CroppedImage(
+                        image: thumbnail,
+                        crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
+                        outputRatio: outputRatio
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(4)
                 } else if isMissing {
                     VStack(spacing: 4) {
                         Image(systemName: "exclamationmark.triangle")
@@ -364,9 +408,10 @@ struct PageCell: View {
                 .truncationMode(.middle)
         }
         .contentShape(Rectangle())
-        .task(id: page.source) {
+        .task(id: ThumbnailKey(source: page.source, rotation: page.rotation)) {
             guard !isMissing else { return }
-            thumbnail = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder)
+            guard let image = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder) else { return }
+            thumbnail = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)
         }
     }
 }

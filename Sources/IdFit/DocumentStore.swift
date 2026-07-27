@@ -29,6 +29,20 @@ final class DocumentStore {
 
     // MARK: - Opening
 
+    private static let lastFolderKey = "lastFolderPath"
+
+    /// Reopens whatever was open last time, so launching the app lands
+    /// straight back in the document being worked on.
+    func restoreLastSession() async {
+        guard folderURL == nil,
+              let path = UserDefaults.standard.string(forKey: Self.lastFolderKey)
+        else { return }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return }
+        await openFolder(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
     func openFolder(_ url: URL) async {
         saveImmediately()
         isLoading = true
@@ -46,6 +60,7 @@ final class DocumentStore {
             state = reconciled
             missingSources = reconciled.missingSources(given: discovered)
             hasUnsavedChanges = false
+            UserDefaults.standard.set(url.path, forKey: Self.lastFolderKey)
             sourceSizes = await Task.detached(priority: .userInitiated) {
                 var sizes: [SourceRef: CGSize] = [:]
                 for ref in discovered {
@@ -69,6 +84,25 @@ final class DocumentStore {
         let before = state.pages.map(\.id)
         state.movePage(id: id, toIndex: index)
         guard state.pages.map(\.id) != before else { return }
+        scheduleSave()
+    }
+
+    /// Drops a page from the document. Source files are never deleted — this
+    /// only forgets pages whose file is gone.
+    func removePage(id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        let source = state.pages.remove(at: index).source
+        if !state.pages.contains(where: { $0.source == source }) {
+            missingSources.remove(source)
+        }
+        scheduleSave()
+    }
+
+    func removeMissingPages() {
+        let before = state.pages.count
+        state.pages.removeAll { missingSources.contains($0.source) }
+        guard state.pages.count != before else { return }
+        missingSources = []
         scheduleSave()
     }
 
@@ -101,6 +135,23 @@ final class DocumentStore {
                     outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
                 )
             }
+        }
+        scheduleSave()
+    }
+
+    /// Rotating changes which shape the crop must have in source space, so
+    /// the existing framing is refitted rather than left at the wrong aspect.
+    func rotatePage(id: UUID, by degrees: Int) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        let rotation = (((state.pages[index].rotation + degrees) % 360) + 360) % 360
+        state.pages[index].rotation = rotation
+
+        if let ratio = state.cropAspectRatio,
+           let crop = state.pages[index].crop,
+           let size = sourceSizes[state.pages[index].source] {
+            state.pages[index].crop = CropGeometry.refit(
+                crop, outputRatio: ratio.ratio, sourceSize: size, rotation: rotation
+            )
         }
         scheduleSave()
     }

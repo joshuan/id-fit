@@ -1,13 +1,36 @@
 # ID Fit
 
-An app for managing document scans. It works locally on a folder, shows its own UI, and saves all state to a `.id-fit.json` file — so it survives moving the folder around, even to another computer. The first version targets macOS only.
+A local macOS app for turning a folder of document scans into a clean, ordered PDF.
 
-Main scenario:
+You scanned your passport and ended up with 20 files — some A4, some re-scanned pieces at a different size, resolution or DPI, maybe a multi-page PDF the scanner produced instead of separate files. ID Fit opens that folder, lets you put the pages in order and crop them, and exports a uniform PDF you can print or email.
 
-- the user scanned their passport and now has 20 A4-format files in a folder (or another format); they may have re-scanned some parts separately, so some files may differ in size, resolution, or even DPI;
-- they open this folder with the app;
-- they sort the page order of the document;
-- they export it to PDF (e.g. to print it or email it to someone);
-- they can crop (each file individually, but with the same aspect ratio across all files, so the export comes out uniform);
-- with a separate, explicit button they can apply the changes to the real files (e.g. if all files were cropped, the app crops the actual files) or export the modified files to a separate folder — BUT BY DEFAULT WE NEVER TOUCH THE SOURCE FILES;
-- they close the app; the folder now contains `.id-fit.json`, which can sync to the cloud along with everything else, so that opening the same folder in our app on another computer restores everything done above (crop, sorting, etc.).
+**Your source files are never modified.** Everything you do lives in app state until you explicitly ask for it to be written out.
+
+## What it does
+
+- **Opens a folder** of scans — JPEG, PNG, TIFF, HEIC and PDF. Each page of a PDF becomes a separate page you can reorder and crop on its own.
+- **Reorders pages** by dragging: the card follows the cursor and the others slide aside to open a gap.
+- **Crops each page individually, with one aspect ratio shared by the whole document**, so the export comes out uniform even when the sources differ in size and DPI. Presets for A4, US Letter, ID card, passport photo and square, plus a custom ratio.
+- **Rotates pages** in 90° steps.
+- **Exports to PDF** — pages in your order, crops applied, at full resolution. PDF sources stay vector rather than being rasterized. Choose A4, US Letter, or a page that fits the content exactly.
+- **Remembers everything in `.id-fit.json` inside the folder.** No absolute paths, nothing stored elsewhere: sync the folder to another computer, open it there, and the order and crops are exactly as you left them.
+
+Two explicit, separate actions can touch files:
+
+- **Export cropped files to a folder** — writes each page as its own file, numbered in page order, into a folder you pick (never the one you are editing).
+- **Apply changes to original files** — rewrites the sources with their crops baked in. Confirmed by a dialog, and untouched copies are kept in `.id-fit-originals/` unless you opt out. Images are re-encoded in their original format; PDFs are cropped through their crop box, so they stay vector and lose no pages.
+
+## Requirements
+
+macOS 15 or later.
+
+## Building
+
+Xcode is required. The Xcode project itself is generated, so there is nothing to open before the first build.
+
+```sh
+make build     # generate the project and build Debug
+make run       # build and launch
+make test      # run the unit tests
+make package   # Release build, ad-hoc signed, into dist/
+```

@@ -19,7 +19,7 @@ final class SourceGeometry: @unchecked Sendable {
     /// Cheap: reads image headers only, never decodes pixels. Safe to call
     /// off the main thread.
     func size(for ref: SourceRef, in folder: URL) -> CGSize? {
-        let key = "\(ref.file)#\(ref.pdfPage ?? -1)" as NSString
+        let key = SourceCacheKey.make(for: ref, in: folder)
         if let cached = cache.object(forKey: key) { return cached.sizeValue }
 
         let url = folder.appendingPathComponent(ref.file)
