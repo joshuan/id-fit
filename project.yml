@@ -37,11 +37,14 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.folder]
         NSServices:
+          # Accepts scans as well as folders: inside an open folder there is
+          # nothing to right-click but the files, and any one of them
+          # identifies the folder to open.
           - NSMenuItem:
               default: Open Folder in ID Fit
             NSMessage: openFolder
             NSPortName: ID Fit
-            NSSendFileTypes: [public.folder]
+            NSSendFileTypes: [public.folder, public.image, com.adobe.pdf]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.shershnev.id-fit
