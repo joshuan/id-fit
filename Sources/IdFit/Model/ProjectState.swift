@@ -53,19 +53,27 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// that a deliberate "no crop" is not undone by re-detecting on every
     /// open, while a scan added later still gets its suggestion.
     var autoDetected: Bool
+    /// Turns the document's aspect ratio on its side for this page.
+    ///
+    /// A passport photographed partly upright and partly sideways cannot be
+    /// framed by one fixed orientation, but every page can still share one
+    /// *shape* — only which way round it lies differs.
+    var transposedRatio: Bool
 
     init(
         id: UUID = UUID(),
         source: SourceRef,
         rotation: Int = 0,
         crop: CropRect? = nil,
-        autoDetected: Bool = false
+        autoDetected: Bool = false,
+        transposedRatio: Bool = false
     ) {
         self.id = id
         self.source = source
         self.rotation = rotation
         self.crop = crop
         self.autoDetected = autoDetected
+        self.transposedRatio = transposedRatio
     }
 
     init(from decoder: Decoder) throws {
@@ -75,6 +83,7 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.rotation = try container.decodeIfPresent(Int.self, forKey: .rotation) ?? 0
         self.crop = try container.decodeIfPresent(CropRect.self, forKey: .crop)
         self.autoDetected = try container.decodeIfPresent(Bool.self, forKey: .autoDetected) ?? false
+        self.transposedRatio = try container.decodeIfPresent(Bool.self, forKey: .transposedRatio) ?? false
     }
 }
 
@@ -123,6 +132,13 @@ struct ProjectState: Codable, Equatable, Sendable {
             result.pages.append(Page(source: ref))
         }
         return result
+    }
+
+    /// The proportions this page must export at: the document's shared ratio,
+    /// laid on its side when the page calls for it.
+    func outputRatio(for page: Page) -> Double? {
+        guard let ratio = cropAspectRatio?.ratio, ratio > 0 else { return nil }
+        return page.transposedRatio ? 1 / ratio : ratio
     }
 
     /// Sources referenced by pages but absent from the folder right now.

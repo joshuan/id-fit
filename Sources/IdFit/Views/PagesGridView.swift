@@ -25,9 +25,12 @@ struct PagesGridView: View {
         }
         .coordinateSpace(.named(Self.boardSpace))
         .overlay {
-            if store.isLoading {
-                ProgressView()
-            } else if store.state.pages.isEmpty {
+            // Only while the folder itself is being read: once the pages are
+            // known, each cell reports its own progress and a second spinner
+            // on top of them says nothing.
+            if store.isLoading && store.state.pages.isEmpty {
+                ProgressView("Reading folder…")
+            } else if !store.isLoading && store.state.pages.isEmpty {
                 ContentUnavailableView(
                     "No scans found",
                     systemImage: "doc.questionmark",
@@ -38,16 +41,21 @@ struct PagesGridView: View {
         .navigationTitle(store.folderName)
         .toolbar {
             ToolbarItem(placement: .status) {
-                if store.isDetectingEdges {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Finding edges…").foregroundStyle(.secondary)
+                Group {
+                    if store.isDetectingEdges {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Finding edges…")
+                        }
+                    } else {
+                        Text(store.state.pages.count == 1 ? "1 page" : "\(store.state.pages.count) pages")
+                            .monospacedDigit()
                     }
-                } else {
-                    Text("\(store.state.pages.count) pages")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 }
+                // The toolbar draws its own capsule tight around the content;
+                // without this the text sits flush against it.
+                .padding(.horizontal, 8)
+                .foregroundStyle(.secondary)
             }
             ToolbarItem {
                 AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
@@ -142,7 +150,7 @@ struct PagesGridView: View {
             page: page,
             number: index + 1,
             folder: store.folderURL!,
-            outputRatio: store.state.cropAspectRatio?.ratio,
+            outputRatio: store.state.outputRatio(for: page),
             isMissing: store.missingSources.contains(page.source)
         )
         // The slot left behind stays visible as an outline, so it is obvious
@@ -186,7 +194,7 @@ struct PagesGridView: View {
                 page: store.state.pages[index],
                 number: index + 1,
                 folder: store.folderURL!,
-                outputRatio: store.state.cropAspectRatio?.ratio,
+                outputRatio: store.state.outputRatio(for: store.state.pages[index]),
                 isMissing: store.missingSources.contains(store.state.pages[index].source)
             )
             .frame(width: drag.size.width, height: drag.size.height)

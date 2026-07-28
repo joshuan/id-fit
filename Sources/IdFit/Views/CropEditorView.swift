@@ -102,7 +102,7 @@ struct CropEditorView: View {
                 image: preview,
                 displayedSize: size,
                 crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
-                outputRatio: store.state.cropAspectRatio?.ratio,
+                outputRatio: store.state.outputRatio(for: page),
                 onChange: { edited in
                     store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
                 },
@@ -134,6 +134,10 @@ struct CropEditorView: View {
                 .foregroundStyle(.secondary)
                 .font(.callout)
             } else {
+                Button(orientationButtonTitle) {
+                    if let page { store.toggleCropOrientation(forPageID: page.id) }
+                }
+                .help("Use the document's shape the other way round on this page")
                 Button("Detect Edges") {
                     if let page {
                         Task { await store.redetectEdges(forPageIDs: [page.id]) }
@@ -158,6 +162,14 @@ struct CropEditorView: View {
             }
         }
         .padding(12)
+    }
+
+    /// Names the shape the button would switch to, not the current one.
+    private var orientationButtonTitle: String {
+        guard let page, let ratio = store.state.outputRatio(for: page) else {
+            return "Flip Crop Orientation"
+        }
+        return ratio >= 1 ? "Make Crop Upright" : "Lay Crop Sideways"
     }
 
     private func loadPreview() async {
@@ -185,6 +197,7 @@ private struct CropCanvas: View {
 
     @State private var gestureStart: CropRect?
     @State private var drawnRect: CGRect?
+    @State private var isMovingCrop = false
 
     private let handleSize: CGFloat = 14
     private let hitSize: CGFloat = 32
@@ -232,12 +245,15 @@ private struct CropCanvas: View {
                         }
                         .allowsHitTesting(false)
 
-                    Rectangle()
-                        .strokeBorder(.white, lineWidth: 1.5)
+                    // A filled, transparent rectangle: a stroked shape only
+                    // hit-tests along its outline, which made the crop feel
+                    // undraggable.
+                    Color.white.opacity(0.001)
                         .frame(width: rect.width, height: rect.height)
+                        .overlay(Rectangle().strokeBorder(.white, lineWidth: 1.5))
                         .offset(x: rect.minX, y: rect.minY)
                         .contentShape(Rectangle())
-                        .pointerStyle(.grabIdle)
+                        .pointerStyle(isMovingCrop ? .grabActive : .grabIdle)
                         .gesture(moveGesture(crop: crop, frame: frame))
 
                     ForEach(CropGeometry.Corner.allCases, id: \.self) { corner in
@@ -292,17 +308,23 @@ private struct CropCanvas: View {
     }
 
     private func moveGesture(crop: CropRect, frame: CGRect) -> some Gesture {
-        DragGesture()
+        DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let start = gestureStart ?? crop
-                if gestureStart == nil { gestureStart = crop }
+                if gestureStart == nil {
+                    gestureStart = crop
+                    isMovingCrop = true
+                }
                 let delta = CGSize(
                     width: value.translation.width * (displayedSize.width / frame.width),
                     height: value.translation.height * (displayedSize.height / frame.height)
                 )
                 onChange(CropGeometry.moved(start, byPixels: delta, sourceSize: displayedSize))
             }
-            .onEnded { _ in gestureStart = nil }
+            .onEnded { _ in
+                gestureStart = nil
+                isMovingCrop = false
+            }
     }
 
     /// Tracked by how far the pointer moved rather than where it is: a

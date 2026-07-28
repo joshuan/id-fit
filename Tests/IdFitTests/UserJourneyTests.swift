@@ -99,11 +99,14 @@ import UniformTypeIdentifiers
         store.setCrop(tightened, forPageID: first.id)
         store.applyCropToAllPages(fromPageID: first.id)
 
-        // Every page now exports at the same ratio, whatever its source.
+        // Every page now exports at the document's shape, whatever its
+        // source — upright, or laid sideways where the page was turned.
         for page in store.state.pages {
             let crop = try #require(page.crop)
             let size = try #require(store.sourceSizes[page.source])
-            #expect(abs(CropGeometry.exportedRatio(crop, sourceSize: size, rotation: page.rotation) - a4) < 0.001)
+            let target = try #require(store.state.outputRatio(for: page))
+            #expect(abs(target - a4) < 0.001 || abs(target - 1 / a4) < 0.001)
+            #expect(abs(CropGeometry.exportedRatio(crop, sourceSize: size, rotation: page.rotation) - target) < 0.001)
         }
 
         // 5. Export the PDF.
@@ -121,8 +124,11 @@ import UniformTypeIdentifiers
         #expect(document.numberOfPages == 6)
         for index in 1...document.numberOfPages {
             let box = try #require(document.page(at: index)).getBoxRect(.mediaBox)
-            #expect(abs(box.width - 595.276) < 1)
-            #expect(abs(box.height - 841.89) < 1)
+            // A4, standing up or lying down — the sideways page prints on the
+            // same sheet, just turned.
+            let upright = abs(box.width - 595.276) < 1 && abs(box.height - 841.89) < 1
+            let sideways = abs(box.width - 841.89) < 1 && abs(box.height - 595.276) < 1
+            #expect(upright || sideways)
         }
 
         // 6. Close the app; everything is on disk.

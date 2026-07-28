@@ -128,21 +128,22 @@ final class DocumentStore {
     /// the ratio last changed still carries its old shape. Either one would
     /// break the uniform export the ratio exists to guarantee.
     private func normalizeCropsToSharedRatio() {
-        guard let ratio = state.cropAspectRatio else { return }
+        guard state.cropAspectRatio != nil else { return }
         for index in state.pages.indices {
             let page = state.pages[index]
-            guard let size = sourceSizes[page.source] else { continue }
+            guard let size = sourceSizes[page.source],
+                  let target = state.outputRatio(for: page) else { continue }
 
             guard let crop = page.crop else {
                 state.pages[index].crop = CropGeometry.centeredCrop(
-                    outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                    outputRatio: target, sourceSize: size, rotation: page.rotation
                 )
                 continue
             }
             let actual = CropGeometry.exportedRatio(crop, sourceSize: size, rotation: page.rotation)
-            guard abs(actual - ratio.ratio) > 0.001 else { continue }
+            guard abs(actual - target) > 0.001 else { continue }
             state.pages[index].crop = CropGeometry.refit(
-                crop, outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                crop, outputRatio: target, sourceSize: size, rotation: page.rotation
             )
         }
     }
@@ -239,13 +240,23 @@ final class DocumentStore {
             setAspectRatio(ratio)
         }
 
-        if let ratio = state.cropAspectRatio {
+        if let ratio = state.cropAspectRatio?.ratio {
             for detection in welcome {
                 guard let index = state.pages.firstIndex(where: { $0.id == detection.id }),
                       let size = sourceSizes[state.pages[index].source] else { continue }
+
+                // A page shot sideways is framed by the same shape turned on
+                // its side, rather than being squeezed into the upright one.
+                let found = CropGeometry.exportedRatio(
+                    detection.crop, sourceSize: size, rotation: state.pages[index].rotation
+                )
+                state.pages[index].transposedRatio =
+                    abs(found - 1 / ratio) < abs(found - ratio)
+
+                guard let target = state.outputRatio(for: state.pages[index]) else { continue }
                 state.pages[index].crop = CropGeometry.refit(
                     detection.crop,
-                    outputRatio: ratio.ratio,
+                    outputRatio: target,
                     sourceSize: size,
                     rotation: state.pages[index].rotation
                 )
@@ -282,34 +293,49 @@ final class DocumentStore {
             return
         }
 
+        _ = ratio
         for index in state.pages.indices {
             let page = state.pages[index]
-            guard let size = sourceSizes[page.source] else { continue }
+            guard let size = sourceSizes[page.source],
+                  let target = state.outputRatio(for: page) else { continue }
             if let existing = page.crop {
                 state.pages[index].crop = CropGeometry.refit(
-                    existing, outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                    existing, outputRatio: target, sourceSize: size, rotation: page.rotation
                 )
             } else {
                 state.pages[index].crop = CropGeometry.centeredCrop(
-                    outputRatio: ratio.ratio, sourceSize: size, rotation: page.rotation
+                    outputRatio: target, sourceSize: size, rotation: page.rotation
                 )
             }
         }
         scheduleSave()
     }
 
-    /// Rotating changes which shape the crop must have in source space, so
-    /// the existing framing is refitted rather than left at the wrong aspect.
+    /// Turning a page turns its crop with it: the same corner of the document
+    /// stays framed, and since the framed region now comes out the other way
+    /// round, the page switches to the sideways form of the shared ratio.
     func rotatePage(id: UUID, by degrees: Int) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
-        let rotation = (((state.pages[index].rotation + degrees) % 360) + 360) % 360
-        state.pages[index].rotation = rotation
+        state.pages[index].rotation = (((state.pages[index].rotation + degrees) % 360) + 360) % 360
 
-        if let ratio = state.cropAspectRatio,
-           let crop = state.pages[index].crop,
-           let size = sourceSizes[state.pages[index].source] {
+        // A quarter turn swaps the exported proportions; a half turn does not.
+        if (((degrees % 360) + 360) % 360) % 180 != 0 {
+            state.pages[index].transposedRatio.toggle()
+        }
+        scheduleSave()
+    }
+
+    /// Lays this page's crop on its side, for a scan whose document sits the
+    /// other way round from the rest.
+    func toggleCropOrientation(forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        state.pages[index].transposedRatio.toggle()
+
+        if let crop = state.pages[index].crop,
+           let size = sourceSizes[state.pages[index].source],
+           let target = state.outputRatio(for: state.pages[index]) {
             state.pages[index].crop = CropGeometry.refit(
-                crop, outputRatio: ratio.ratio, sourceSize: size, rotation: rotation
+                crop, outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
             )
         }
         scheduleSave()
@@ -330,6 +356,8 @@ final class DocumentStore {
         let height = (crop.height * displayed.height).rounded()
         guard width > 0, height > 0 else { return }
 
+        // The page that defines the ratio holds it the right way up.
+        state.pages[index].transposedRatio = false
         // Every other page gets a centered crop of the new ratio…
         setAspectRatio(AspectRatio(width: width, height: height))
         // …while this one keeps exactly the framing that defined it.
@@ -345,11 +373,11 @@ final class DocumentStore {
     }
 
     func resetCrop(forPageID id: UUID) {
-        guard let ratio = state.cropAspectRatio,
-              let index = state.pages.firstIndex(where: { $0.id == id }),
-              let size = sourceSizes[state.pages[index].source] else { return }
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let size = sourceSizes[state.pages[index].source],
+              let target = state.outputRatio(for: state.pages[index]) else { return }
         state.pages[index].crop = CropGeometry.centeredCrop(
-            outputRatio: ratio.ratio, sourceSize: size, rotation: state.pages[index].rotation
+            outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
         )
         scheduleSave()
     }
@@ -358,12 +386,13 @@ final class DocumentStore {
     /// aligned the same way. Each page is refitted to the shared ratio, so
     /// sources of different pixel sizes still export uniformly.
     func applyCropToAllPages(fromPageID id: UUID) {
-        guard let ratio = state.cropAspectRatio,
+        guard state.cropAspectRatio != nil,
               let template = state.pages.first(where: { $0.id == id })?.crop else { return }
         for index in state.pages.indices {
-            guard let size = sourceSizes[state.pages[index].source] else { continue }
+            guard let size = sourceSizes[state.pages[index].source],
+                  let target = state.outputRatio(for: state.pages[index]) else { continue }
             state.pages[index].crop = CropGeometry.refit(
-                template, outputRatio: ratio.ratio, sourceSize: size, rotation: state.pages[index].rotation
+                template, outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
             )
         }
         scheduleSave()

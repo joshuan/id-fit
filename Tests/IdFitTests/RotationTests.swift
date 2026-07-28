@@ -56,14 +56,12 @@ import UniformTypeIdentifiers
         #expect(PageRenderer.rotate(image, by: 0).width == 400)
     }
 
-    @MainActor
-    @Test func rotatingAPageRefitsItsCropToTheSharedRatio() async throws {
+    /// A folder holding one blank scan of the given pixel size.
+    private func makeImageFolder(size: CGSize) throws -> URL {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("id-fit-rotation-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
 
-        let size = CGSize(width: 600, height: 400)
         let context = CGContext(
             data: nil, width: Int(size.width), height: Int(size.height),
             bitsPerComponent: 8, bytesPerRow: 0,
@@ -75,6 +73,14 @@ import UniformTypeIdentifiers
         )!
         CGImageDestinationAddImage(destination, context.makeImage()!, nil)
         #expect(CGImageDestinationFinalize(destination))
+        return folder
+    }
+
+    @MainActor
+    @Test func rotatingAPageTurnsItsCropWithIt() async throws {
+        let size = CGSize(width: 600, height: 400)
+        let folder = try makeImageFolder(size: size)
+        defer { try? FileManager.default.removeItem(at: folder) }
 
         let store = DocumentStore()
         await store.openFolder(folder)
@@ -87,11 +93,71 @@ import UniformTypeIdentifiers
         store.rotatePage(id: page.id, by: 90)
         let rotated = store.state.pages[0]
         #expect(rotated.rotation == 90)
-        // Still A4 once the rotation is taken into account.
+
+        // The very same region of the scan stays framed — turning the page
+        // must not shift what was chosen.
+        #expect(rotated.crop == before)
+
+        // What it exports is that shape laid on its side, which is exactly
+        // what the page now is.
         let after = try #require(rotated.crop)
-        #expect(abs(exportedRatio(after, sourceSize: size, rotation: 90) - a4) < 0.0001)
-        #expect(after.x >= -0.0001 && after.x + after.width <= 1.0001)
-        #expect(after.y >= -0.0001 && after.y + after.height <= 1.0001)
+        #expect(rotated.transposedRatio)
+        #expect(abs(exportedRatio(after, sourceSize: size, rotation: 90) - 1 / a4) < 0.0001)
+        #expect(abs(try #require(store.state.outputRatio(for: rotated)) - 1 / a4) < 0.0001)
+    }
+
+    @MainActor
+    @Test func turningAPageAllTheWayRoundRestoresIt() async throws {
+        let folder = try makeImageFolder(size: CGSize(width: 600, height: 400))
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        store.setAspectRatio(AspectRatio(width: 210, height: 297))
+        let id = store.state.pages[0].id
+        let original = store.state.pages[0]
+
+        for _ in 0..<4 { store.rotatePage(id: id, by: 90) }
+
+        #expect(store.state.pages[0].rotation == 0)
+        #expect(store.state.pages[0].transposedRatio == original.transposedRatio)
+        #expect(store.state.pages[0].crop == original.crop)
+    }
+
+    @MainActor
+    @Test func aHalfTurnKeepsTheOrientationOfTheRatio() async throws {
+        let folder = try makeImageFolder(size: CGSize(width: 600, height: 400))
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        store.setAspectRatio(AspectRatio(width: 210, height: 297))
+        let id = store.state.pages[0].id
+
+        store.rotatePage(id: id, by: 180)
+        #expect(store.state.pages[0].rotation == 180)
+        #expect(!store.state.pages[0].transposedRatio)
+    }
+
+    @MainActor
+    @Test func aPageCanUseTheSharedShapeSideways() async throws {
+        let folder = try makeImageFolder(size: CGSize(width: 600, height: 400))
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        store.setAspectRatio(AspectRatio(width: 210, height: 297))
+        let id = store.state.pages[0].id
+
+        // The document on this scan lies the other way round from the rest.
+        store.toggleCropOrientation(forPageID: id)
+
+        let page = store.state.pages[0]
+        #expect(page.transposedRatio)
+        let crop = try #require(page.crop)
+        #expect(abs(exportedRatio(crop, sourceSize: CGSize(width: 600, height: 400), rotation: 0) - 1 / a4) < 0.0001)
+        // Other pages are untouched by one page's orientation.
+        #expect(store.state.cropAspectRatio == AspectRatio(width: 210, height: 297))
     }
 
     @MainActor
