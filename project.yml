@@ -36,6 +36,13 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.folder]
+          # Finder offers no "Open With" on a folder, only on files — so
+          # scans are accepted too and open the folder holding them. Rank
+          # "Alternate" keeps ID Fit from ever becoming the default viewer.
+          - CFBundleTypeName: Scan
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.image, com.adobe.pdf]
         NSServices:
           # Accepts scans as well as folders: inside an open folder there is
           # nothing to right-click but the files, and any one of them
