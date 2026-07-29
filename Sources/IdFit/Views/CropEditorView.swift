@@ -123,6 +123,12 @@ struct CropEditorView: View {
                         },
                         onDraw: { drawn in
                             store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
+                        },
+                        onDistort: { quad in
+                            store.setQuad(
+                                DocumentQuadGeometry.rotated(quad, by: -page.rotation),
+                                forPageID: page.id
+                            )
                         }
                     )
                 }
@@ -180,6 +186,11 @@ struct CropEditorView: View {
                     .disabled(page?.crop == nil)
                 }
             }
+            if store.state.cropAspectRatio != nil, page?.quad == nil {
+                Text("Hold ⌘ while dragging a corner to correct perspective.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             if store.isDetectingEdges {
                 HStack(spacing: 6) {
@@ -222,10 +233,17 @@ private struct CropCanvas: View {
     let onChange: (CropRect) -> Void
     /// Called with a freehand rectangle when no ratio has been chosen yet.
     let onDraw: (CropRect) -> Void
+    /// Called once, when a corner has been pulled out of square with Command
+    /// held — the deliberate gesture that starts perspective correction.
+    let onDistort: (DocumentQuad) -> Void
 
     @State private var gestureStart: CropRect?
     @State private var drawnRect: CGRect?
     @State private var isMovingCrop = false
+    /// Shown while a corner is being pulled free; committed on release, so
+    /// the page does not switch editors mid-drag.
+    @State private var distorting: DocumentQuad?
+    @State private var isDistorting = false
 
     private let handleSize: CGFloat = 14
     private let hitSize: CGFloat = 32
@@ -262,30 +280,48 @@ private struct CropCanvas: View {
 
                 if let crop, outputRatio != nil {
                     let rect = viewRect(for: crop, in: frame)
+                    let outline = distorting.map { quad in
+                        quad.corners.map { viewPoint($0, in: frame) }
+                    }
 
                     Color.black.opacity(0.55)
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
                         .reverseMask {
-                            Rectangle()
-                                .frame(width: rect.width, height: rect.height)
-                                .offset(x: rect.minX, y: rect.minY)
+                            if let outline {
+                                QuadShape(points: outline.map {
+                                    CGPoint(x: $0.x - frame.minX, y: $0.y - frame.minY)
+                                })
+                                .frame(width: frame.width, height: frame.height)
+                                .offset(x: frame.minX, y: frame.minY)
+                            } else {
+                                Rectangle()
+                                    .frame(width: rect.width, height: rect.height)
+                                    .offset(x: rect.minX, y: rect.minY)
+                            }
                         }
                         .allowsHitTesting(false)
 
-                    // A filled, transparent rectangle: a stroked shape only
-                    // hit-tests along its outline, which made the crop feel
-                    // undraggable.
-                    Color.white.opacity(0.001)
-                        .frame(width: rect.width, height: rect.height)
-                        .overlay(Rectangle().strokeBorder(.white, lineWidth: 1.5))
-                        .offset(x: rect.minX, y: rect.minY)
-                        .contentShape(Rectangle())
-                        .pointerStyle(isMovingCrop ? .grabActive : .grabIdle)
-                        .gesture(moveGesture(crop: crop, frame: frame))
+                    if let outline {
+                        QuadShape(points: outline)
+                            .stroke(.white, lineWidth: 1.5)
+                            .allowsHitTesting(false)
+                    } else {
+                        // A filled, transparent rectangle: a stroked shape only
+                        // hit-tests along its outline, which made the crop feel
+                        // undraggable.
+                        Color.white.opacity(0.001)
+                            .frame(width: rect.width, height: rect.height)
+                            .overlay(Rectangle().strokeBorder(.white, lineWidth: 1.5))
+                            .offset(x: rect.minX, y: rect.minY)
+                            .contentShape(Rectangle())
+                            .pointerStyle(isMovingCrop ? .grabActive : .grabIdle)
+                            .gesture(moveGesture(crop: crop, frame: frame))
+                    }
 
                     ForEach(CropGeometry.Corner.allCases, id: \.self) { corner in
-                        let point = handlePosition(corner: corner, in: rect)
+                        let point = distorting.map { viewPoint($0[corner.quadCorner], in: frame) }
+                            ?? handlePosition(corner: corner, in: rect)
                         Circle()
                             .fill(.white)
                             .overlay(Circle().strokeBorder(.black.opacity(0.4), lineWidth: 1))
@@ -364,7 +400,23 @@ private struct CropCanvas: View {
             .onChanged { value in
                 guard let outputRatio else { return }
                 let start = gestureStart ?? crop
-                if gestureStart == nil { gestureStart = crop }
+                if gestureStart == nil {
+                    gestureStart = crop
+                    // Decided once, at the grab: the shape must not change
+                    // its mind halfway through a drag.
+                    isDistorting = NSEvent.modifierFlags.contains(.command)
+                }
+
+                if isDistorting {
+                    var quad = distorting ?? DocumentQuad(start)
+                    let origin = DocumentQuad(start)[corner.quadCorner]
+                    quad[corner.quadCorner] = CGPoint(
+                        x: origin.x + value.translation.width / frame.width,
+                        y: origin.y + value.translation.height / frame.height
+                    )
+                    distorting = quad.clampedToUnitSquare()
+                    return
+                }
 
                 let origin = CropGeometry.cornerPoint(corner, of: start, sourceSize: displayedSize)
                 let point = CGPoint(
@@ -379,7 +431,14 @@ private struct CropCanvas: View {
                     sourceSize: displayedSize
                 ))
             }
-            .onEnded { _ in gestureStart = nil }
+            .onEnded { _ in
+                gestureStart = nil
+                if let quad = distorting {
+                    distorting = nil
+                    onDistort(quad)
+                }
+                isDistorting = false
+            }
     }
 
     // MARK: - Layout helpers
@@ -393,6 +452,10 @@ private struct CropCanvas: View {
             width: size.width,
             height: size.height
         )
+    }
+
+    private func viewPoint(_ point: CGPoint, in frame: CGRect) -> CGPoint {
+        CGPoint(x: frame.minX + point.x * frame.width, y: frame.minY + point.y * frame.height)
     }
 
     private func viewRect(for crop: CropRect, in frame: CGRect) -> CGRect {
@@ -423,17 +486,3 @@ private struct CropCanvas: View {
     }
 }
 
-private extension View {
-    /// Punches a hole into the receiver — used for the dimmed area around the
-    /// crop rectangle.
-    func reverseMask<Mask: View>(@ViewBuilder _ mask: () -> Mask) -> some View {
-        self.mask {
-            ZStack(alignment: .topLeading) {
-                Rectangle()
-                mask()
-                    .blendMode(.destinationOut)
-            }
-            .compositingGroup()
-        }
-    }
-}

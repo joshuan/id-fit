@@ -115,9 +115,11 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// skipped when scanning, so an export saved next to the scans does not
     /// come back as a stack of new pages.
     var exportedFiles: [String]
-    /// Whether newly analysed pages are straightened. Photographs of
-    /// documents want it; a flatbed scan that is already square does not, and
-    /// forcing it there only risks nudging a good scan out of true.
+    /// Whether newly analysed pages are straightened.
+    ///
+    /// Off by default: a locked rectangle is predictable, and a page that can
+    /// be pulled out of square without meaning to is worse than one that
+    /// needs an extra deliberate gesture to correct.
     var straightenByDefault: Bool
 
     init(
@@ -125,7 +127,7 @@ struct ProjectState: Codable, Equatable, Sendable {
         cropAspectRatio: AspectRatio? = nil,
         pages: [Page] = [],
         exportedFiles: [String] = [],
-        straightenByDefault: Bool = true
+        straightenByDefault: Bool = false
     ) {
         self.version = version
         self.cropAspectRatio = cropAspectRatio
@@ -141,7 +143,7 @@ struct ProjectState: Codable, Equatable, Sendable {
         self.pages = try container.decodeIfPresent([Page].self, forKey: .pages) ?? []
         self.exportedFiles = try container.decodeIfPresent([String].self, forKey: .exportedFiles) ?? []
         self.straightenByDefault =
-            try container.decodeIfPresent(Bool.self, forKey: .straightenByDefault) ?? true
+            try container.decodeIfPresent(Bool.self, forKey: .straightenByDefault) ?? false
     }
 
     /// Merges the state with the sources currently present in the folder:

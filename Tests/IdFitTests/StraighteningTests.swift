@@ -187,15 +187,19 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         await store.redetectEdgesOnAllPages()
+
+        // Off unless asked for: a locked rectangle is the predictable default.
+        #expect(store.state.pages[0].quad == nil)
+        #expect(store.state.pages[0].crop != nil)
+
+        // Switching it on uses the corners detection already found.
+        store.setStraightenByDefault(true)
         #expect(store.state.pages[0].quad != nil)
 
         store.setStraightenByDefault(false)
         #expect(store.state.pages[0].quad == nil)
         // Turning it off still leaves the document framed.
         #expect(store.state.pages[0].crop != nil)
-
-        store.setStraightenByDefault(true)
-        #expect(store.state.pages[0].quad != nil)
     }
 
     @MainActor
@@ -213,6 +217,9 @@ import UniformTypeIdentifiers
         await store.openFolder(folder)
         await store.redetectEdgesOnAllPages()
         let id = store.state.pages[0].id
+        #expect(store.state.pages[0].quad == nil)
+
+        store.toggleStraightening(forPageID: id)
         #expect(store.state.pages[0].quad != nil)
 
         store.toggleStraightening(forPageID: id)
@@ -292,6 +299,6 @@ import UniformTypeIdentifiers
         """
         let state = try JSONDecoder().decode(ProjectState.self, from: Data(json.utf8))
         #expect(state.pages[0].quad == nil)
-        #expect(state.straightenByDefault)
+        #expect(!state.straightenByDefault)
     }
 }

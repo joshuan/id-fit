@@ -92,28 +92,4 @@ struct QuadCanvas: View {
     }
 }
 
-private struct QuadShape: Shape {
-    let points: [CGPoint]
 
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        guard let first = points.first else { return path }
-        path.move(to: first)
-        for point in points.dropFirst() { path.addLine(to: point) }
-        path.closeSubpath()
-        return path
-    }
-}
-
-private extension View {
-    func reverseMask<Mask: View>(@ViewBuilder _ mask: () -> Mask) -> some View {
-        self.mask {
-            ZStack(alignment: .topLeading) {
-                Rectangle()
-                mask()
-                    .blendMode(.destinationOut)
-            }
-            .compositingGroup()
-        }
-    }
-}

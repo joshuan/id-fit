@@ -277,9 +277,15 @@ final class DocumentStore {
 
                 // A page shot sideways is framed by the same shape turned on
                 // its side, rather than being squeezed into the upright one.
-                let found = CropGeometry.exportedRatio(
-                    entry.detection.crop, sourceSize: size, rotation: state.pages[index].rotation
-                )
+                //
+                // The document's own edge lengths decide this, not the upright
+                // box around it: that box tends towards square as the page
+                // tilts, and would happily call a portrait document landscape.
+                let document = entry.detection.quad.rectifiedSize(sourceSize: size)
+                guard document.width > 0, document.height > 0 else { continue }
+                let found = state.pages[index].rotation % 180 == 0
+                    ? document.width / document.height
+                    : document.height / document.width
                 state.pages[index].transposedRatio =
                     abs(found - 1 / ratio) < abs(found - ratio)
 
@@ -348,6 +354,12 @@ final class DocumentStore {
             }
         }
         scheduleSave()
+    }
+
+    /// Turns several pages at once — a batch of scans is usually off by the
+    /// same quarter turn.
+    func rotatePages(ids: some Collection<UUID>, by degrees: Int) {
+        for id in ids { rotatePage(id: id, by: degrees) }
     }
 
     /// Turning a page turns its crop with it: the same corner of the document

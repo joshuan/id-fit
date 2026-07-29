@@ -8,6 +8,8 @@ struct PagesGridView: View {
     @State private var editorTarget: EditorTarget?
     @State private var isEditingCustomRatio = false
     @State private var isConfirmingApply = false
+    @State private var selection: Set<UUID> = []
+    @State private var selectionAnchor: UUID?
 
     private static let boardSpace = "board"
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
@@ -16,6 +18,10 @@ struct PagesGridView: View {
         VStack(spacing: 0) {
             if !store.missingSources.isEmpty {
                 missingBanner
+                Divider()
+            }
+            if selection.count > 1 {
+                selectionBar
                 Divider()
             }
             ZStack {
@@ -68,6 +74,11 @@ struct PagesGridView: View {
             }
             ToolbarItem {
                 Menu {
+                    Button("Select All Pages") {
+                        selection = Set(store.state.pages.map(\.id))
+                    }
+                    .keyboardShortcut("a", modifiers: .command)
+                    Divider()
                     Button("Detect Edges on All Pages") {
                         Task { await store.redetectEdgesOnAllPages() }
                     }
@@ -115,6 +126,39 @@ struct PagesGridView: View {
         }
     }
 
+    /// Appears once more than one page is picked, so a batch of scans off by
+    /// the same quarter turn can be fixed in one go.
+    private var selectionBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selection.count) of \(store.state.pages.count) pages selected")
+                .font(.callout)
+                .monospacedDigit()
+
+            Button {
+                store.rotatePages(ids: orderedSelection, by: -90)
+            } label: {
+                Label("Rotate Left", systemImage: "rotate.left")
+            }
+            Button {
+                store.rotatePages(ids: orderedSelection, by: 90)
+            } label: {
+                Label("Rotate Right", systemImage: "rotate.right")
+            }
+
+            Spacer()
+
+            Button("Select All") { selection = Set(store.state.pages.map(\.id)) }
+            Button("Deselect") { selection.removeAll() }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.4))
+    }
+
+    private var orderedSelection: [UUID] {
+        store.state.pages.map(\.id).filter(selection.contains)
+    }
+
     private var missingBanner: some View {
         HStack {
             Label(
@@ -145,6 +189,13 @@ struct PagesGridView: View {
             // Only the slots animate; the dragged card tracks the cursor
             // directly, so it must not be part of this animation.
             .animation(.snappy(duration: 0.25), value: store.state.pages.map(\.id))
+            .frame(maxWidth: .infinity, minHeight: 400, alignment: .top)
+            .background(
+                // Clicking past the pages clears the selection.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { selection.removeAll() }
+            )
         }
     }
 
@@ -170,12 +221,25 @@ struct PagesGridView: View {
         } action: { frame in
             cellFrames[page.id] = frame
         }
+        .overlay {
+            if selection.contains(page.id) {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+            }
+        }
         .onTapGesture(count: 2) { editorTarget = EditorTarget(id: index) }
+        .onTapGesture { select(page: page, at: index) }
         .contextMenu {
-            Button("Crop…") { editorTarget = EditorTarget(id: index) }
+            Button(selectionApplies(to: page) ? "Crop First Selected…" : "Crop…") {
+                editorTarget = EditorTarget(id: index)
+            }
             Divider()
-            Button("Rotate Left") { store.rotatePage(id: page.id, by: -90) }
-            Button("Rotate Right") { store.rotatePage(id: page.id, by: 90) }
+            Button(rotateTitle("Rotate Left", page: page)) {
+                store.rotatePages(ids: targets(for: page), by: -90)
+            }
+            Button(rotateTitle("Rotate Right", page: page)) {
+                store.rotatePages(ids: targets(for: page), by: 90)
+            }
             Divider()
             Button("Duplicate Page") { store.duplicatePage(id: page.id) }
             Divider()
@@ -189,6 +253,37 @@ struct PagesGridView: View {
             }
         }
         .gesture(dragGesture(for: page))
+    }
+
+    // MARK: - Selecting
+
+    /// Which pages an action should act on: the selection when the page
+    /// belongs to it, otherwise just the page itself.
+    private func targets(for page: Page) -> [UUID] {
+        selectionApplies(to: page) ? store.state.pages.map(\.id).filter(selection.contains) : [page.id]
+    }
+
+    private func selectionApplies(to page: Page) -> Bool {
+        selection.count > 1 && selection.contains(page.id)
+    }
+
+    private func rotateTitle(_ base: String, page: Page) -> String {
+        selectionApplies(to: page) ? "\(base) (\(selection.count) pages)" : base
+    }
+
+    private func select(page: Page, at index: Int) {
+        let modifiers = NSEvent.modifierFlags
+        if modifiers.contains(.command) {
+            if selection.contains(page.id) { selection.remove(page.id) } else { selection.insert(page.id) }
+        } else if modifiers.contains(.shift), let anchor = selectionAnchor,
+                  let from = store.state.pages.firstIndex(where: { $0.id == anchor }) {
+            let range = from <= index ? from...index : index...from
+            selection.formUnion(store.state.pages[range].map(\.id))
+            return
+        } else {
+            selection = [page.id]
+        }
+        selectionAnchor = page.id
     }
 
     @ViewBuilder
