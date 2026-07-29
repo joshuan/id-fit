@@ -15,3 +15,17 @@ struct PagePreviewKey: Hashable {
         self.rotation = page.rotation
     }
 }
+
+/// Identifies the picture a grid cell shows — the page as it will be
+/// exported, straightening included but not the crop, which is drawn as an
+/// overlay. Corner edits happen in the modal editor, so unlike the editor's
+/// own preview this key can safely follow them.
+struct PageThumbnailKey: Hashable {
+    let preview: PagePreviewKey
+    let quad: DocumentQuad?
+
+    init(_ page: Page) {
+        self.preview = PagePreviewKey(page)
+        self.quad = page.quad
+    }
+}

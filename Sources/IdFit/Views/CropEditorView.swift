@@ -98,18 +98,35 @@ struct CropEditorView: View {
     @ViewBuilder
     private var canvas: some View {
         if let page, let size = displayedSize, let preview {
-            CropCanvas(
-                image: preview,
-                displayedSize: size,
-                crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
-                outputRatio: store.state.outputRatio(for: page),
-                onChange: { edited in
-                    store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
-                },
-                onDraw: { drawn in
-                    store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
+            Group {
+                if let quad = page.quad {
+                    // Straightened: the four corners are what matters, and
+                    // they need not form a rectangle.
+                    QuadCanvas(
+                        image: preview,
+                        displayedSize: size,
+                        quad: DocumentQuadGeometry.rotated(quad, by: page.rotation)
+                    ) { edited in
+                        store.setQuad(
+                            DocumentQuadGeometry.rotated(edited, by: -page.rotation),
+                            forPageID: page.id
+                        )
+                    }
+                } else {
+                    CropCanvas(
+                        image: preview,
+                        displayedSize: size,
+                        crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
+                        outputRatio: store.state.outputRatio(for: page),
+                        onChange: { edited in
+                            store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
+                        },
+                        onDraw: { drawn in
+                            store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
+                        }
+                    )
                 }
-            )
+            }
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let page, store.missingSources.contains(page.source) {
@@ -134,23 +151,34 @@ struct CropEditorView: View {
                 .foregroundStyle(.secondary)
                 .font(.callout)
             } else {
-                Button(orientationButtonTitle) {
-                    if let page { store.toggleCropOrientation(forPageID: page.id) }
+                Toggle("Straighten", isOn: Binding(
+                    get: { page?.quad != nil },
+                    set: { _ in if let page { store.toggleStraightening(forPageID: page.id) } }
+                ))
+                .toggleStyle(.checkbox)
+                .help("Map the document's four corners onto a true rectangle")
+
+                if page?.quad == nil {
+                    Button(orientationButtonTitle) {
+                        if let page { store.toggleCropOrientation(forPageID: page.id) }
+                    }
+                    .help("Use the document's shape the other way round on this page")
                 }
-                .help("Use the document's shape the other way round on this page")
                 Button("Detect Edges") {
                     if let page {
                         Task { await store.redetectEdges(forPageIDs: [page.id]) }
                     }
                 }
                 .disabled(store.isDetectingEdges)
-                Button("Reset Crop") {
-                    if let page { store.resetCrop(forPageID: page.id) }
+                if page?.quad == nil {
+                    Button("Reset Crop") {
+                        if let page { store.resetCrop(forPageID: page.id) }
+                    }
+                    Button("Apply This Framing to All Pages") {
+                        if let page { store.applyCropToAllPages(fromPageID: page.id) }
+                    }
+                    .disabled(page?.crop == nil)
                 }
-                Button("Apply This Framing to All Pages") {
-                    if let page { store.applyCropToAllPages(fromPageID: page.id) }
-                }
-                .disabled(page?.crop == nil)
             }
             Spacer()
             if store.isDetectingEdges {

@@ -19,15 +19,22 @@ enum DocumentEdgeDetector {
     /// none.
     static let minimumConfidence: Float = 0.5
 
+    struct Detection: Sendable {
+        /// The document's outline, following its tilt.
+        var quad: DocumentQuad
+        /// The upright box around it, used when straightening is off.
+        var crop: CropRect
+    }
+
     /// Blocking; call from a background task.
-    static func detect(for ref: SourceRef, in folder: URL) -> CropRect? {
+    static func detect(for ref: SourceRef, in folder: URL) -> Detection? {
         guard let image = ThumbnailProvider.shared.renderedImage(
             for: ref, in: folder, maxPixel: analysisSize
         ) else { return nil }
         return detect(in: image)
     }
 
-    static func detect(in image: CGImage) -> CropRect? {
+    static func detect(in image: CGImage) -> Detection? {
         let request = VNDetectDocumentSegmentationRequest()
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         do {
@@ -39,18 +46,21 @@ enum DocumentEdgeDetector {
         guard let observation = request.results?.first,
               observation.confidence >= minimumConfidence else { return nil }
 
-        let box = observation.boundingBox
-        // Vision measures from the bottom-left corner upwards; crops are
-        // measured from the top-left corner downwards.
-        let crop = CropRect(
-            x: box.minX,
-            y: 1 - box.maxY,
-            width: box.width,
-            height: box.height
+        // Vision measures from the bottom-left corner upwards; crops and quads
+        // are measured from the top-left corner downwards.
+        func flipped(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x, y: 1 - point.y)
+        }
+        let quad = DocumentQuad(
+            topLeft: flipped(observation.topLeft),
+            topRight: flipped(observation.topRight),
+            bottomRight: flipped(observation.bottomRight),
+            bottomLeft: flipped(observation.bottomLeft)
         ).clampedToUnitSquare()
 
+        let crop = quad.boundingCrop
         guard isUseful(crop) else { return nil }
-        return crop
+        return Detection(quad: quad, crop: crop)
     }
 
     /// Largest share of the scan a suggestion may cover. On a featureless

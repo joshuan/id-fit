@@ -27,6 +27,10 @@ final class DocumentStore {
 
     var folderName: String { folderURL?.lastPathComponent ?? "" }
 
+    /// Handed to the exporters so a straightened page knows the shape it is
+    /// being mapped onto.
+    private var sharedRatio: AspectRatio? { state.cropAspectRatio }
+
     // MARK: - Opening
 
     private static let lastFolderKey = "lastFolderPath"
@@ -203,11 +207,11 @@ final class DocumentStore {
         let before = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0.crop) })
 
         let detections = await Task.detached(priority: .utility) {
-            var found: [(id: UUID, crop: CropRect)] = []
+            var found: [(id: UUID, detection: DocumentEdgeDetector.Detection)] = []
             for page in targets {
                 if Task.isCancelled { break }
-                if let crop = DocumentEdgeDetector.detect(for: page.source, in: folderURL) {
-                    found.append((page.id, crop))
+                if let detection = DocumentEdgeDetector.detect(for: page.source, in: folderURL) {
+                    found.append((page.id, detection))
                 }
             }
             return found
@@ -217,7 +221,10 @@ final class DocumentStore {
         apply(detections, replacingUnchanged: before)
     }
 
-    private func apply(_ detections: [(id: UUID, crop: CropRect)], replacingUnchanged before: [UUID: CropRect?]) {
+    private func apply(
+        _ detections: [(id: UUID, detection: DocumentEdgeDetector.Detection)],
+        replacingUnchanged before: [UUID: CropRect?]
+    ) {
         // Every page that was looked at counts as offered, found or not.
         for index in state.pages.indices where before.keys.contains(state.pages[index].id) {
             state.pages[index].autoDetected = true
@@ -231,35 +238,50 @@ final class DocumentStore {
             return page.crop == snapshot
         }
 
+        // Keep the corners even if straightening is off right now, so the
+        // switch can be flipped later without analysing everything again.
+        for entry in welcome {
+            detectedQuads[entry.id] = entry.detection.quad
+        }
+
         if state.cropAspectRatio == nil,
            let first = welcome.first,
            let page = state.pages.first(where: { $0.id == first.id }),
-           let ratio = aspectRatio(of: first.crop, on: page) {
+           let ratio = aspectRatio(of: first.detection.crop, on: page) {
             // Nothing chosen yet: let the shape of the first document found
             // set the ratio for the whole batch.
             setAspectRatio(ratio)
         }
 
         if let ratio = state.cropAspectRatio?.ratio {
-            for detection in welcome {
-                guard let index = state.pages.firstIndex(where: { $0.id == detection.id }),
+            for entry in welcome {
+                guard let index = state.pages.firstIndex(where: { $0.id == entry.id }),
                       let size = sourceSizes[state.pages[index].source] else { continue }
 
                 // A page shot sideways is framed by the same shape turned on
                 // its side, rather than being squeezed into the upright one.
                 let found = CropGeometry.exportedRatio(
-                    detection.crop, sourceSize: size, rotation: state.pages[index].rotation
+                    entry.detection.crop, sourceSize: size, rotation: state.pages[index].rotation
                 )
                 state.pages[index].transposedRatio =
                     abs(found - 1 / ratio) < abs(found - ratio)
 
                 guard let target = state.outputRatio(for: state.pages[index]) else { continue }
                 state.pages[index].crop = CropGeometry.refit(
-                    detection.crop,
+                    entry.detection.crop,
                     outputRatio: target,
                     sourceSize: size,
                     rotation: state.pages[index].rotation
                 )
+
+                // Only warp a document that is actually askew: nudging an
+                // already-square scan through a resample gains nothing.
+                if state.straightenByDefault,
+                   entry.detection.quad.skew > PerspectiveCorrector.negligibleSkew {
+                    state.pages[index].quad = entry.detection.quad
+                } else {
+                    state.pages[index].quad = nil
+                }
             }
         }
         scheduleSave()
@@ -325,6 +347,69 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    // MARK: - Straightening
+
+    /// Whether pages analysed from now on are straightened. Flipping it also
+    /// applies to the pages already detected, since that is plainly what a
+    /// document-wide switch is expected to do.
+    func setStraightenByDefault(_ enabled: Bool) {
+        state.straightenByDefault = enabled
+        for index in state.pages.indices {
+            if enabled {
+                guard state.pages[index].quad == nil,
+                      let detected = detectedQuads[state.pages[index].id] else { continue }
+                straighten(pageAt: index, using: detected)
+            } else if state.pages[index].quad != nil {
+                flatten(pageAt: index)
+            }
+        }
+        scheduleSave()
+    }
+
+    func setQuad(_ quad: DocumentQuad, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              state.pages[index].quad != quad else { return }
+        state.pages[index].quad = quad.clampedToUnitSquare()
+        scheduleSave()
+    }
+
+    /// Turns straightening on or off for one scan — a flatbed page that is
+    /// already square gains nothing from being warped.
+    func toggleStraightening(forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        if state.pages[index].quad != nil {
+            flatten(pageAt: index)
+        } else {
+            let quad = detectedQuads[id] ?? DocumentQuad(
+                state.pages[index].crop ?? CropRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
+            )
+            straighten(pageAt: index, using: quad)
+        }
+        scheduleSave()
+    }
+
+    private func straighten(pageAt index: Int, using quad: DocumentQuad) {
+        state.pages[index].quad = quad.clampedToUnitSquare()
+    }
+
+    private func flatten(pageAt index: Int) {
+        let page = state.pages[index]
+        // Fall back to the upright box around the corners, so turning
+        // straightening off still leaves the document framed.
+        if let quad = page.quad,
+           let size = sourceSizes[page.source],
+           let target = state.outputRatio(for: page) {
+            state.pages[index].crop = CropGeometry.refit(
+                quad.boundingCrop, outputRatio: target, sourceSize: size, rotation: page.rotation
+            )
+        }
+        state.pages[index].quad = nil
+    }
+
+    /// Corners found by detection, kept even when straightening is off so the
+    /// switch can be flipped without analysing everything again.
+    @ObservationIgnored private var detectedQuads: [UUID: DocumentQuad] = [:]
+
     /// Lays this page's crop on its side, for a scan whose document sits the
     /// other way round from the rest.
     func toggleCropOrientation(forPageID id: UUID) {
@@ -389,6 +474,9 @@ final class DocumentStore {
         guard state.cropAspectRatio != nil,
               let template = state.pages.first(where: { $0.id == id })?.crop else { return }
         for index in state.pages.indices {
+            // The page the framing came from is already framed as asked;
+            // running it through the fit again could only nudge it.
+            guard state.pages[index].id != id else { continue }
             guard let size = sourceSizes[state.pages[index].source],
                   let target = state.outputRatio(for: state.pages[index]) else { continue }
             state.pages[index].crop = CropGeometry.refit(
@@ -428,9 +516,13 @@ final class DocumentStore {
         lastExport = nil
 
         let pages = state.pages
+        let ratio = sharedRatio
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try PDFExporter.export(pages: pages, folder: folderURL, to: destination, paper: paper)
+                try PDFExporter.export(
+                    pages: pages, folder: folderURL, to: destination,
+                    paper: paper, sharedRatio: ratio
+                )
             }.value
             rememberExportInsideFolder(destination)
             lastExport = (destination, result)
@@ -498,9 +590,12 @@ final class DocumentStore {
         lastError = nil
 
         let pages = state.pages
+        let ratio = sharedRatio
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try FileExporter.export(pages: pages, folder: folderURL, to: destination)
+                try FileExporter.export(
+                    pages: pages, folder: folderURL, to: destination, sharedRatio: ratio
+                )
             }.value
             lastExport = (destination, PDFExporter.Result(
                 exportedPages: result.writtenFiles.count,
@@ -523,9 +618,13 @@ final class DocumentStore {
         lastError = nil
 
         let pages = state.pages
+        let ratio = sharedRatio
         do {
             let result = try await Task.detached(priority: .userInitiated) {
-                try OriginalsWriter.apply(pages: pages, folder: folderURL, makeBackup: makeBackup)
+                try OriginalsWriter.apply(
+                    pages: pages, folder: folderURL,
+                    makeBackup: makeBackup, sharedRatio: ratio
+                )
             }.value
 
             // The files now contain the crop, so keeping it in the state

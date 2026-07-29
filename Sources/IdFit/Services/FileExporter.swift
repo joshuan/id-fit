@@ -23,7 +23,12 @@ enum FileExporter {
 
     /// Files are numbered by page order, so the sequence survives outside the
     /// app. PDF pages stay PDF (and stay vector); images keep their format.
-    static func export(pages: [Page], folder: URL, to destination: URL) throws -> Result {
+    static func export(
+        pages: [Page],
+        folder: URL,
+        to destination: URL,
+        sharedRatio: AspectRatio? = nil
+    ) throws -> Result {
         guard !isDescendant(destination, of: folder) else {
             throw ExportError.destinationInsideWorkingFolder
         }
@@ -36,7 +41,10 @@ enum FileExporter {
         for (index, page) in pages.enumerated() {
             let prefix = String(format: "%0\(width)d", index + 1)
             do {
-                let name = try writeFile(page: page, prefix: prefix, folder: folder, destination: destination)
+                let name = try writeFile(
+                    page: page, prefix: prefix, folder: folder,
+                    destination: destination, sharedRatio: sharedRatio
+                )
                 written.append(name)
             } catch {
                 skipped.append(page.source.displayName)
@@ -54,7 +62,8 @@ enum FileExporter {
         page: Page,
         prefix: String,
         folder: URL,
-        destination: URL
+        destination: URL,
+        sharedRatio: AspectRatio?
     ) throws -> String {
         let sourceURL = folder.appendingPathComponent(page.source.file)
         let base = sourceURL.deletingPathExtension().lastPathComponent
@@ -62,13 +71,18 @@ enum FileExporter {
         if let pdfPage = page.source.pdfPage {
             let name = "\(prefix)-\(base)-p\(pdfPage + 1).pdf"
             let output = destination.appendingPathComponent(name)
-            _ = try PDFExporter.export(pages: [page], folder: folder, to: output, paper: .fitContent)
+            _ = try PDFExporter.export(
+                pages: [page], folder: folder, to: output,
+                paper: .fitContent, sharedRatio: sharedRatio
+            )
             return name
         }
 
         let ext = sourceURL.pathExtension
         guard let type = ImageWriter.contentType(forExtension: ext),
-              let content = PageRenderer.content(for: page, in: folder),
+              let content = PageRenderer.content(
+                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+              ),
               case .image(let image) = content
         else { throw WriteFailure.unreadableSource }
 

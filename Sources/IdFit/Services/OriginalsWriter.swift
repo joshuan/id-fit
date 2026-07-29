@@ -17,8 +17,13 @@ enum OriginalsWriter {
         var backupFolder: URL?
     }
 
-    static func apply(pages: [Page], folder: URL, makeBackup: Bool) throws -> Result {
-        let edited = pages.filter { $0.crop != nil || $0.rotation != 0 }
+    static func apply(
+        pages: [Page],
+        folder: URL,
+        makeBackup: Bool,
+        sharedRatio: AspectRatio? = nil
+    ) throws -> Result {
+        let edited = pages.filter { $0.crop != nil || $0.rotation != 0 || $0.quad != nil }
         guard !edited.isEmpty else { return Result() }
 
         var backupFolder: URL?
@@ -41,14 +46,20 @@ enum OriginalsWriter {
             }
             do {
                 let applied: [UUID]
-                if url.pathExtension.lowercased() == "pdf" {
+                // A straightened page cannot be expressed as a crop box, so
+                // it is rewritten as pixels even when it came from a PDF.
+                let straightened = filePages.contains { $0.quad != nil }
+                if url.pathExtension.lowercased() == "pdf" && !straightened {
                     try applyToPDF(at: url, pages: filePages, backupFolder: backupFolder)
                     applied = filePages.map(\.id)
                 } else {
                     // An image file backs exactly one page; only that page's
                     // edits end up baked in.
                     guard let page = filePages.first else { continue }
-                    try applyToImage(at: url, page: page, folder: folder, backupFolder: backupFolder)
+                    try applyToImage(
+                        at: url, page: page, folder: folder,
+                        backupFolder: backupFolder, sharedRatio: sharedRatio
+                    )
                     applied = [page.id]
                 }
                 result.changedFiles.append(file)
@@ -63,9 +74,17 @@ enum OriginalsWriter {
 
     // MARK: - Images
 
-    private static func applyToImage(at url: URL, page: Page, folder: URL, backupFolder: URL?) throws {
+    private static func applyToImage(
+        at url: URL,
+        page: Page,
+        folder: URL,
+        backupFolder: URL?,
+        sharedRatio: AspectRatio?
+    ) throws {
         guard let type = ImageWriter.contentType(forExtension: url.pathExtension),
-              let content = PageRenderer.content(for: page, in: folder),
+              let content = PageRenderer.content(
+                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+              ),
               case .image(let image) = content
         else { throw ImageWriter.WriteError.unsupportedFormat(url.lastPathComponent) }
 

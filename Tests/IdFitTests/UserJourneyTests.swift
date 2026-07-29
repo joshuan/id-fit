@@ -86,13 +86,14 @@ import UniformTypeIdentifiers
         let landscape = try #require(store.state.pages.first { $0.source.file == "scan-10.png" })
         store.rotatePage(id: landscape.id, by: 90)
 
-        // 4. Frame one page tighter and copy that framing everywhere.
+        // 4. Frame one page tighter and copy that framing everywhere. This
+        //    page was turned a moment ago, so it holds the shape sideways.
         let first = store.state.pages[0]
         let tightened = CropGeometry.resized(
             try #require(first.crop),
             corner: .topLeft,
             toPixelPoint: CGPoint(x: 120, y: 120),
-            outputRatio: a4,
+            outputRatio: try #require(store.state.outputRatio(for: first)),
             sourceSize: try #require(store.sourceSizes[first.source]),
             rotation: first.rotation
         )

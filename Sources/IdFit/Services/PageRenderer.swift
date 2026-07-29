@@ -32,9 +32,16 @@ enum PageRenderer {
         }
     }
 
-    static func content(for page: Page, in folder: URL) -> Content? {
+    /// - Parameter outputRatio: the proportions the page must end up with,
+    ///   needed only when straightening, which maps the document's corners
+    ///   onto exactly that shape.
+    static func content(for page: Page, in folder: URL, outputRatio: Double? = nil) -> Content? {
         let url = folder.appendingPathComponent(page.source.file)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+
+        if let quad = page.quad, let outputRatio {
+            return straightened(page: page, quad: quad, outputRatio: outputRatio, url: url, in: folder)
+        }
 
         if url.pathExtension.lowercased() == "pdf" {
             guard let document = CGPDFDocument(url as CFURL),
@@ -52,6 +59,36 @@ enum PageRenderer {
         guard let image = fullResolutionImage(at: url) else { return nil }
         let cropped = crop(image, to: page.crop)
         return .image(rotate(cropped, by: page.rotation))
+    }
+
+    /// Straightening replaces the crop: the quad already says which part of
+    /// the photograph is the document. A PDF page has to be rasterized first,
+    /// since a warp cannot be expressed in vector page content.
+    private static func straightened(
+        page: Page,
+        quad: DocumentQuad,
+        outputRatio: Double,
+        url: URL,
+        in folder: URL
+    ) -> Content? {
+        let source: CGImage?
+        if url.pathExtension.lowercased() == "pdf" {
+            source = ThumbnailProvider.shared.renderedImage(
+                for: page.source, in: folder, maxPixel: 4000
+            )
+        } else {
+            source = fullResolutionImage(at: url)
+        }
+        guard let source else { return nil }
+
+        // The quad is drawn on the unrotated source, so it is straightened
+        // there too; the page's own turn is applied afterwards.
+        let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: page.rotation)
+        guard let corrected = PerspectiveCorrector.straighten(
+            source, quad: quad, targetAspect: aspect
+        ) else { return nil }
+
+        return .image(rotate(corrected, by: page.rotation))
     }
 
     /// Full-size pixels with the EXIF orientation baked in, so crop rects —

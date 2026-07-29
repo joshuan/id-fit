@@ -67,7 +67,7 @@ import UniformTypeIdentifiers
 
     @Test func findsADocumentOccupyingPartOfTheScan() throws {
         let placement = CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.7)
-        let crop = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement)))
+        let crop = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement))).crop
 
         // Vision measures from the bottom, crops from the top.
         #expect(abs(crop.x - placement.minX) < 0.05)
@@ -82,7 +82,7 @@ import UniformTypeIdentifiers
             CGRect(x: 0.4, y: 0.3, width: 0.55, height: 0.6),
             CGRect(x: 0.25, y: 0.25, width: 0.5, height: 0.5),
         ] {
-            let crop = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement)))
+            let crop = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement))).crop
             #expect(crop.x >= 0)
             #expect(crop.y >= 0)
             #expect(crop.x + crop.width <= 1.0001)
@@ -92,10 +92,10 @@ import UniformTypeIdentifiers
 
     @Test func aTiltedDocumentIsEnclosedByTheSuggestion() throws {
         let placement = CGRect(x: 0.25, y: 0.2, width: 0.5, height: 0.6)
-        let straight = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement)))
+        let straight = try #require(DocumentEdgeDetector.detect(in: Self.scanImage(document: placement))).crop
         let tilted = try #require(
             DocumentEdgeDetector.detect(in: Self.scanImage(document: placement, tilt: 0.06))
-        )
+        ).crop
 
         // The upright box around a tilted sheet has to be wider than the sheet.
         #expect(tilted.width > straight.width)

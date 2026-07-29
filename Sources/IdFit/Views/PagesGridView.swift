@@ -72,6 +72,10 @@ struct PagesGridView: View {
                         Task { await store.redetectEdgesOnAllPages() }
                     }
                     .disabled(store.isDetectingEdges)
+                    Toggle("Straighten Photographed Documents", isOn: Binding(
+                        get: { store.state.straightenByDefault },
+                        set: { store.setStraightenByDefault($0) }
+                    ))
                     Divider()
                     Button("Export Cropped Files to Folder…") {
                         Task { await store.runFileExportFlow() }
@@ -303,7 +307,11 @@ struct PageCell: View {
                     // Show the page as it will be exported: rotated, cropped.
                     CroppedImage(
                         image: thumbnail,
-                        crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
+                        // A straightened page is already exactly its own
+                        // content; there is nothing left to crop off.
+                        crop: page.quad == nil
+                            ? page.crop.map { CropGeometry.rotated($0, by: page.rotation) }
+                            : nil,
                         outputRatio: outputRatio
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -340,9 +348,19 @@ struct PageCell: View {
                 .truncationMode(.middle)
         }
         .contentShape(Rectangle())
-        .task(id: PagePreviewKey(page)) {
+        .task(id: PageThumbnailKey(page)) {
             guard !isMissing else { return }
             guard let image = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder) else { return }
+
+            // Straightened pages are shown straightened, so the grid matches
+            // what the export will contain.
+            if let quad = page.quad, let outputRatio {
+                let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: page.rotation)
+                if let corrected = PerspectiveCorrector.straighten(image, quad: quad, targetAspect: aspect) {
+                    thumbnail = PageRenderer.rotate(corrected, by: page.rotation)
+                    return
+                }
+            }
             thumbnail = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)
         }
     }

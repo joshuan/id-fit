@@ -96,29 +96,31 @@ enum CropGeometry {
     static func refit(_ crop: CropRect, outputRatio: Double, sourceSize: CGSize, rotation: Int = 0) -> CropRect {
         let aspect = sourceAspect(outputRatio: outputRatio, rotation: rotation)
         let current = pixelRect(crop, sourceSize: sourceSize)
+        guard aspect > 0, current.width > 0, current.height > 0 else { return crop }
         let center = CGPoint(x: current.midX, y: current.midY)
 
-        var width = current.width
+        // Reshape without resizing: the crop keeps covering as much of the
+        // scan as it did. Growing it to whatever would fit — which this used
+        // to do — throws away a framing the user chose deliberately and
+        // leaves a wide margin around anything detected.
+        let area = current.width * current.height
+        var width = (area * aspect).squareRoot()
         var height = width / aspect
-        if height > current.height {
-            height = current.height
-            width = height * aspect
-        }
-        // Grow back into the source if the shape allows it.
-        let maxWidth = min(center.x, sourceSize.width - center.x) * 2
-        let maxHeight = min(center.y, sourceSize.height - center.y) * 2
-        let scale = min(maxWidth / width, maxHeight / height)
-        if scale > 1 {
-            width *= scale
-            height *= scale
-        }
 
-        let rect = CGRect(
+        // Only shrink when it genuinely cannot fit the source at all.
+        let fit = min(1, min(sourceSize.width / width, sourceSize.height / height))
+        width *= fit
+        height *= fit
+
+        // Prefer sliding back inside over shrinking further.
+        var rect = CGRect(
             x: center.x - width / 2,
             y: center.y - height / 2,
             width: width,
             height: height
         )
+        rect.origin.x = min(max(rect.origin.x, 0), sourceSize.width - width)
+        rect.origin.y = min(max(rect.origin.y, 0), sourceSize.height - height)
         return cropRect(rect, sourceSize: sourceSize).clampedToUnitSquare()
     }
 

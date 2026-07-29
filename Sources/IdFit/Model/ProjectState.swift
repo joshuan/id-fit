@@ -59,6 +59,10 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// framed by one fixed orientation, but every page can still share one
     /// *shape* — only which way round it lies differs.
     var transposedRatio: Bool
+    /// Set when this page is straightened: the document's four corners in the
+    /// photograph, mapped back onto a true rectangle on export. Nil means the
+    /// page is taken as-is and only the upright `crop` applies.
+    var quad: DocumentQuad?
 
     init(
         id: UUID = UUID(),
@@ -66,7 +70,8 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         rotation: Int = 0,
         crop: CropRect? = nil,
         autoDetected: Bool = false,
-        transposedRatio: Bool = false
+        transposedRatio: Bool = false,
+        quad: DocumentQuad? = nil
     ) {
         self.id = id
         self.source = source
@@ -74,6 +79,7 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.crop = crop
         self.autoDetected = autoDetected
         self.transposedRatio = transposedRatio
+        self.quad = quad
     }
 
     init(from decoder: Decoder) throws {
@@ -84,12 +90,21 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.crop = try container.decodeIfPresent(CropRect.self, forKey: .crop)
         self.autoDetected = try container.decodeIfPresent(Bool.self, forKey: .autoDetected) ?? false
         self.transposedRatio = try container.decodeIfPresent(Bool.self, forKey: .transposedRatio) ?? false
+        self.quad = try container.decodeIfPresent(DocumentQuad.self, forKey: .quad)
     }
 }
 
 /// The whole persisted state of one working folder — the content of
 /// `.id-fit.json`. Everything the user does in the app (order, crops, ratio)
 /// lives here; source files are never modified implicitly.
+extension Page {
+    /// The document's shape as this page must hold it.
+    func outputRatio(sharedRatio: AspectRatio?) -> Double? {
+        guard let ratio = sharedRatio?.ratio, ratio > 0 else { return nil }
+        return transposedRatio ? 1 / ratio : ratio
+    }
+}
+
 struct ProjectState: Codable, Equatable, Sendable {
     static let currentVersion = 1
 
@@ -100,17 +115,23 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// skipped when scanning, so an export saved next to the scans does not
     /// come back as a stack of new pages.
     var exportedFiles: [String]
+    /// Whether newly analysed pages are straightened. Photographs of
+    /// documents want it; a flatbed scan that is already square does not, and
+    /// forcing it there only risks nudging a good scan out of true.
+    var straightenByDefault: Bool
 
     init(
         version: Int = Self.currentVersion,
         cropAspectRatio: AspectRatio? = nil,
         pages: [Page] = [],
-        exportedFiles: [String] = []
+        exportedFiles: [String] = [],
+        straightenByDefault: Bool = true
     ) {
         self.version = version
         self.cropAspectRatio = cropAspectRatio
         self.pages = pages
         self.exportedFiles = exportedFiles
+        self.straightenByDefault = straightenByDefault
     }
 
     init(from decoder: Decoder) throws {
@@ -119,6 +140,8 @@ struct ProjectState: Codable, Equatable, Sendable {
         self.cropAspectRatio = try container.decodeIfPresent(AspectRatio.self, forKey: .cropAspectRatio)
         self.pages = try container.decodeIfPresent([Page].self, forKey: .pages) ?? []
         self.exportedFiles = try container.decodeIfPresent([String].self, forKey: .exportedFiles) ?? []
+        self.straightenByDefault =
+            try container.decodeIfPresent(Bool.self, forKey: .straightenByDefault) ?? true
     }
 
     /// Merges the state with the sources currently present in the folder:
@@ -137,8 +160,7 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// The proportions this page must export at: the document's shared ratio,
     /// laid on its side when the page calls for it.
     func outputRatio(for page: Page) -> Double? {
-        guard let ratio = cropAspectRatio?.ratio, ratio > 0 else { return nil }
-        return page.transposedRatio ? 1 / ratio : ratio
+        page.outputRatio(sharedRatio: cropAspectRatio)
     }
 
     /// Sources referenced by pages but absent from the folder right now.

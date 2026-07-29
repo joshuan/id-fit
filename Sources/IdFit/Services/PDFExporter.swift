@@ -57,11 +57,14 @@ enum PDFExporter {
 
     /// Writes the PDF. Pages whose source file is missing are skipped and
     /// reported rather than aborting the whole export.
+    /// - Parameter sharedRatio: the document's aspect ratio, needed to
+    ///   straighten pages whose corners are known.
     static func export(
         pages: [Page],
         folder: URL,
         to destination: URL,
-        paper: Paper
+        paper: Paper,
+        sharedRatio: AspectRatio? = nil
     ) throws -> Result {
         guard !pages.isEmpty else { throw ExportError.noPages }
         guard let context = CGContext(destination as CFURL, mediaBox: nil, nil) else {
@@ -72,7 +75,9 @@ enum PDFExporter {
         var skipped: [String] = []
 
         for page in pages {
-            guard let content = PageRenderer.content(for: page, in: folder) else {
+            guard let content = PageRenderer.content(
+                for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+            ) else {
                 skipped.append(page.source.displayName)
                 continue
             }
