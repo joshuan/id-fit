@@ -106,7 +106,8 @@ extension Page {
 }
 
 struct ProjectState: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    /// 2 repairs page orientations recorded by an earlier, unreliable guess.
+    static let currentVersion = 2
 
     var version: Int
     var cropAspectRatio: AspectRatio?

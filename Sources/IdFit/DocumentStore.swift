@@ -109,6 +109,10 @@ final class DocumentStore {
                 .filter { !$0.autoDetected && $0.crop == nil }
                 .map(\.id)
 
+            if loaded.version < ProjectState.currentVersion {
+                repairOrientationsFromDetectedShapes()
+                state.version = ProjectState.currentVersion
+            }
             normalizeCropsToSharedRatio()
             if state != loaded {
                 try StateStore.save(state, to: url)
@@ -122,6 +126,43 @@ final class DocumentStore {
             // A corrupt state file must never be silently overwritten — the
             // user may have edits from another machine in it.
             lastError = "Could not open folder: \(error.localizedDescription)"
+        }
+    }
+
+    /// Fixes orientations recorded before the app learned to read a
+    /// document's shape from its own edges.
+    ///
+    /// A straightened page whose orientation disagrees with its corners is
+    /// not merely framed oddly — it is stretched, because straightening maps
+    /// those corners onto whatever shape the page claims to be. The corners
+    /// are the truth here, so they win.
+    private func repairOrientationsFromDetectedShapes() {
+        for index in state.pages.indices {
+            guard let quad = state.pages[index].quad else { continue }
+            alignOrientation(ofPageAt: index, with: quad)
+        }
+    }
+
+    /// Points a page at whichever way round its document actually lies.
+    private func alignOrientation(ofPageAt index: Int, with quad: DocumentQuad) {
+        guard let ratio = state.cropAspectRatio?.ratio, ratio > 0,
+              let size = sourceSizes[state.pages[index].source] else { return }
+        let document = quad.rectifiedSize(sourceSize: size)
+        guard document.width > 0, document.height > 0 else { return }
+
+        let found = state.pages[index].rotation % 180 == 0
+            ? document.width / document.height
+            : document.height / document.width
+        let sideways = abs(found - 1 / ratio) < abs(found - ratio)
+        guard state.pages[index].transposedRatio != sideways else { return }
+
+        state.pages[index].transposedRatio = sideways
+        if let crop = state.pages[index].crop,
+           let target = state.outputRatio(for: state.pages[index]) {
+            state.pages[index].crop = CropGeometry.refit(
+                crop, outputRatio: target, sourceSize: size,
+                rotation: state.pages[index].rotation
+            )
         }
     }
 
@@ -398,7 +439,13 @@ final class DocumentStore {
     func setQuad(_ quad: DocumentQuad, forPageID id: UUID) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].quad != quad else { return }
+        let wasFlat = state.pages[index].quad == nil
         state.pages[index].quad = quad.clampedToUnitSquare()
+        // Starting to straighten: point the page whichever way its document
+        // actually lies, or it would be stretched onto the wrong shape.
+        if wasFlat {
+            alignOrientation(ofPageAt: index, with: state.pages[index].quad!)
+        }
         scheduleSave()
     }
 
@@ -419,6 +466,7 @@ final class DocumentStore {
 
     private func straighten(pageAt index: Int, using quad: DocumentQuad) {
         state.pages[index].quad = quad.clampedToUnitSquare()
+        alignOrientation(ofPageAt: index, with: state.pages[index].quad!)
     }
 
     private func flatten(pageAt index: Int) {
