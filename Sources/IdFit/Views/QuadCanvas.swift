@@ -10,6 +10,9 @@ struct QuadCanvas: View {
     let onChange: (DocumentQuad) -> Void
 
     @State private var gestureStart: DocumentQuad?
+    /// The corner the magnifier is following — dragged, or merely pointed at.
+    @State private var draggedCorner: DocumentQuad.Corner?
+    @State private var hoveredCorner: DocumentQuad.Corner?
 
     private let handleSize: CGFloat = 14
     private let hitSize: CGFloat = 32
@@ -53,7 +56,18 @@ struct QuadCanvas: View {
                         .contentShape(Rectangle())
                         .pointerStyle(.grabIdle)
                         .offset(x: point.x - hitSize / 2, y: point.y - hitSize / 2)
+                        .onHover { hoveredCorner = $0 ? corner : (hoveredCorner == corner ? nil : hoveredCorner) }
                         .gesture(dragGesture(corner: corner, frame: frame))
+                }
+
+                if let corner = draggedCorner ?? hoveredCorner {
+                    LoupeView(
+                        image: image,
+                        focus: quad[corner],
+                        imageSize: frame.size,
+                        guides: quad.neighbours(of: corner)
+                    )
+                    .position(LoupeView.position(awayFrom: corner, in: frame))
                 }
             }
         }
@@ -63,7 +77,10 @@ struct QuadCanvas: View {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let start = gestureStart ?? quad
-                if gestureStart == nil { gestureStart = quad }
+                if gestureStart == nil {
+                    gestureStart = quad
+                    draggedCorner = corner
+                }
 
                 var edited = start
                 let origin = start[corner]
@@ -73,7 +90,10 @@ struct QuadCanvas: View {
                 )
                 onChange(edited.clampedToUnitSquare())
             }
-            .onEnded { _ in gestureStart = nil }
+            .onEnded { _ in
+                gestureStart = nil
+                draggedCorner = nil
+            }
     }
 
     private func fittedImageFrame(in container: CGSize) -> CGRect {

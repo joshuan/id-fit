@@ -244,6 +244,9 @@ private struct CropCanvas: View {
     /// the page does not switch editors mid-drag.
     @State private var distorting: DocumentQuad?
     @State private var isDistorting = false
+    /// The corner the magnifier is following — dragged, or merely pointed at.
+    @State private var draggedCorner: CropGeometry.Corner?
+    @State private var hoveredCorner: CropGeometry.Corner?
 
     private let handleSize: CGFloat = 14
     private let hitSize: CGFloat = 32
@@ -332,7 +335,20 @@ private struct CropCanvas: View {
                             .contentShape(Rectangle())
                             .pointerStyle(.frameResize(position: resizePosition(for: corner)))
                             .offset(x: point.x - hitSize / 2, y: point.y - hitSize / 2)
+                            .onHover { hoveredCorner = $0 ? corner : (hoveredCorner == corner ? nil : hoveredCorner) }
                             .gesture(resizeGesture(corner: corner, crop: crop, frame: frame))
+                    }
+
+                    if let corner = draggedCorner ?? hoveredCorner {
+                        let shape = distorting ?? DocumentQuad(crop)
+                        let spot = shape[corner.quadCorner]
+                        LoupeView(
+                            image: image,
+                            focus: spot,
+                            imageSize: frame.size,
+                            guides: shape.neighbours(of: corner.quadCorner)
+                        )
+                        .position(LoupeView.position(awayFrom: corner.quadCorner, in: frame))
                     }
                 }
             }
@@ -402,6 +418,7 @@ private struct CropCanvas: View {
                 let start = gestureStart ?? crop
                 if gestureStart == nil {
                     gestureStart = crop
+                    draggedCorner = corner
                     // Decided once, at the grab: the shape must not change
                     // its mind halfway through a drag.
                     isDistorting = NSEvent.modifierFlags.contains(.command)
@@ -433,6 +450,7 @@ private struct CropCanvas: View {
             }
             .onEnded { _ in
                 gestureStart = nil
+                draggedCorner = nil
                 if let quad = distorting {
                     distorting = nil
                     onDistort(quad)

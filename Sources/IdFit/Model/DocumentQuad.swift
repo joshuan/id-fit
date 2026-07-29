@@ -56,6 +56,14 @@ struct DocumentQuad: Codable, Equatable, Hashable, Sendable {
         }
     }
 
+    /// The two corners sharing an edge with this one, in cycle order — the
+    /// edges a magnifier should draw through it.
+    func neighbours(of corner: Corner) -> [CGPoint] {
+        let cycle = corners
+        let index = corner.rawValue
+        return [cycle[(index + 3) % 4], cycle[(index + 1) % 4]]
+    }
+
     func clampedToUnitSquare() -> DocumentQuad {
         func clamp(_ point: CGPoint) -> CGPoint {
             CGPoint(x: min(max(point.x, 0), 1), y: min(max(point.y, 0), 1))
