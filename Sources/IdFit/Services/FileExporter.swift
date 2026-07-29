@@ -21,12 +21,12 @@ enum FileExporter {
         }
     }
 
-    /// Files are numbered by page order, so the sequence survives outside the
-    /// app. PDF pages stay PDF (and stay vector); images keep their format.
     static func export(
         pages: [Page],
         folder: URL,
         to destination: URL,
+        format: ExportOptions.Format = .originalFormat,
+        naming: ExportOptions.Naming = .sequential,
         sharedRatio: AspectRatio? = nil
     ) throws -> Result {
         guard !isDescendant(destination, of: folder) else {
@@ -36,14 +36,18 @@ enum FileExporter {
 
         var written: [String] = []
         var skipped: [String] = []
-        let width = max(String(pages.count).count, 2)
+        var names = NameAllocator(pageCount: pages.count, naming: naming)
 
         for (index, page) in pages.enumerated() {
-            let prefix = String(format: "%0\(width)d", index + 1)
             do {
                 let name = try writeFile(
-                    page: page, prefix: prefix, folder: folder,
-                    destination: destination, sharedRatio: sharedRatio
+                    page: page,
+                    index: index,
+                    names: &names,
+                    folder: folder,
+                    destination: destination,
+                    format: format,
+                    sharedRatio: sharedRatio
                 )
                 written.append(name)
             } catch {
@@ -58,21 +62,70 @@ enum FileExporter {
         case unreadableSource
     }
 
+    /// Hands out one file name per page, never the same one twice — a scan
+    /// used as two pages of the document would otherwise overwrite itself.
+    private struct NameAllocator {
+        let width: Int
+        let naming: ExportOptions.Naming
+        private var taken: Set<String> = []
+
+        init(pageCount: Int, naming: ExportOptions.Naming) {
+            self.width = max(String(pageCount).count, 3)
+            self.naming = naming
+        }
+
+        mutating func name(for page: Page, index: Int, extension ext: String) -> String {
+            let base: String
+            switch naming {
+            case .sequential:
+                base = String(format: "%0\(width)d", index + 1)
+            case .original:
+                let stem = (page.source.file as NSString).deletingPathExtension
+                base = page.source.pdfPage.map { "\(stem)-p\($0 + 1)" } ?? stem
+            }
+
+            var candidate = "\(base).\(ext)"
+            var copy = 2
+            while taken.contains(candidate.lowercased()) {
+                candidate = "\(base) (\(copy)).\(ext)"
+                copy += 1
+            }
+            taken.insert(candidate.lowercased())
+            return candidate
+        }
+    }
+
     private static func writeFile(
         page: Page,
-        prefix: String,
+        index: Int,
+        names: inout NameAllocator,
         folder: URL,
         destination: URL,
+        format: ExportOptions.Format,
         sharedRatio: AspectRatio?
     ) throws -> String {
         let sourceURL = folder.appendingPathComponent(page.source.file)
-        let base = sourceURL.deletingPathExtension().lastPathComponent
+        let outputRatio = page.outputRatio(sharedRatio: sharedRatio)
 
-        if let pdfPage = page.source.pdfPage {
-            let name = "\(prefix)-\(base)-p\(pdfPage + 1).pdf"
-            let output = destination.appendingPathComponent(name)
+        if format == .jpeg {
+            guard let image = PageRenderer.image(for: page, in: folder, outputRatio: outputRatio) else {
+                throw WriteFailure.unreadableSource
+            }
+            let name = names.name(for: page, index: index, extension: "jpg")
+            try ImageWriter.write(
+                image, to: destination.appendingPathComponent(name),
+                type: .jpeg, inheritingMetadataFrom: sourceURL
+            )
+            return name
+        }
+
+        // Keeping the original format: a PDF page stays a PDF, and stays
+        // vector with it.
+        if page.source.pdfPage != nil {
+            let name = names.name(for: page, index: index, extension: "pdf")
             _ = try PDFExporter.export(
-                pages: [page], folder: folder, to: output,
+                pages: [page], folder: folder,
+                to: destination.appendingPathComponent(name),
                 paper: .fitContent, sharedRatio: sharedRatio
             )
             return name
@@ -80,15 +133,14 @@ enum FileExporter {
 
         let ext = sourceURL.pathExtension
         guard let type = ImageWriter.contentType(forExtension: ext),
-              let content = PageRenderer.content(
-                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
-              ),
-              case .image(let image) = content
+              let image = PageRenderer.image(for: page, in: folder, outputRatio: outputRatio)
         else { throw WriteFailure.unreadableSource }
 
-        let name = "\(prefix)-\(base).\(ext)"
-        let output = destination.appendingPathComponent(name)
-        try ImageWriter.write(image, to: output, type: type, inheritingMetadataFrom: sourceURL)
+        let name = names.name(for: page, index: index, extension: ext)
+        try ImageWriter.write(
+            image, to: destination.appendingPathComponent(name),
+            type: type, inheritingMetadataFrom: sourceURL
+        )
         return name
     }
 

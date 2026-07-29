@@ -20,8 +20,8 @@ struct IdFitApp: App {
                     .keyboardShortcut("o", modifiers: .command)
             }
             CommandGroup(replacing: .importExport) {
-                Button("Export PDF…") {
-                    Task { await store.runExportFlow() }
+                Button("Export…") {
+                    store.isPresentingExport = true
                 }
                 .keyboardShortcut("e", modifiers: .command)
                 .disabled(store.folderURL == nil || store.state.pages.isEmpty || store.isExporting)

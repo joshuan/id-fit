@@ -61,8 +61,8 @@ struct PagesGridView: View {
                 AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
             }
             ToolbarItem {
-                Button("Export PDF…", systemImage: "square.and.arrow.up") {
-                    Task { await store.runExportFlow() }
+                Button("Export…", systemImage: "square.and.arrow.up") {
+                    store.isPresentingExport = true
                 }
                 .disabled(store.state.pages.isEmpty || store.isExporting)
             }
@@ -76,10 +76,6 @@ struct PagesGridView: View {
                         get: { store.state.straightenByDefault },
                         set: { store.setStraightenByDefault($0) }
                     ))
-                    Divider()
-                    Button("Export Cropped Files to Folder…") {
-                        Task { await store.runFileExportFlow() }
-                    }
                     Divider()
                     Button("Apply Changes to Original Files…", role: .destructive) {
                         isConfirmingApply = true
@@ -106,6 +102,9 @@ struct PagesGridView: View {
         }
         .sheet(isPresented: $isConfirmingApply) {
             ApplyToOriginalsSheet(store: store)
+        }
+        .sheet(isPresented: $store.isPresentingExport) {
+            ExportSheet(store: store)
         }
         .overlay {
             if store.isExporting {
@@ -177,6 +176,8 @@ struct PagesGridView: View {
             Divider()
             Button("Rotate Left") { store.rotatePage(id: page.id, by: -90) }
             Button("Rotate Right") { store.rotatePage(id: page.id, by: 90) }
+            Divider()
+            Button("Duplicate Page") { store.duplicatePage(id: page.id) }
             Divider()
             Button("Move to Front") { store.movePage(id: page.id, toIndex: 0) }
             Button("Move to Back") {

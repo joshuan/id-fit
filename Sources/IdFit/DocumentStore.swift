@@ -161,6 +161,23 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    /// Puts a second copy of a page right after it.
+    ///
+    /// One scan often holds two pages of the finished document — a passport
+    /// cover is both its front and its back — so the same file has to appear
+    /// twice, each copy framed on its own half.
+    func duplicatePage(id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        var copy = state.pages[index]
+        copy.id = UUID()
+        state.pages.insert(copy, at: index + 1)
+        // The copy starts from the same suggestion, and is not re-analysed.
+        if let quad = detectedQuads[id] {
+            detectedQuads[copy.id] = quad
+        }
+        scheduleSave()
+    }
+
     /// Drops a page from the document. Source files are never deleted — this
     /// only forgets pages whose file is gone.
     func removePage(id: UUID) {
@@ -492,20 +509,61 @@ final class DocumentStore {
     /// Set after a successful export so the UI can offer to reveal the file.
     private(set) var lastExport: (url: URL, result: PDFExporter.Result)?
 
-    /// Asks for a destination, then writes the PDF.
+    /// Options for the next export, remembered within the session.
+    var exportOptions = ExportOptions(format: .pdf, paper: .fitContent, naming: .sequential)
+    var isPresentingExport = false
+
+    var missingPageCount: Int {
+        state.pages.filter { missingSources.contains($0.source) }.count
+    }
+
+    /// Asks where to put the export, then writes it. One document goes to a
+    /// file; separate images go into a folder.
     func runExportFlow() async {
         guard let folderURL, !state.pages.isEmpty else { return }
-        let missing = state.pages.filter { missingSources.contains($0.source) }.count
-        guard let choice = ExportPanel.run(
-            defaultName: suggestedExportName,
-            directory: folderURL,
-            pageCount: state.pages.count - missing,
-            missingCount: missing,
-            paper: preferredPaper
-        ) else { return }
 
-        preferredPaper = choice.paper
-        await exportPDF(to: choice.url, paper: choice.paper)
+        if exportOptions.format == .pdf {
+            guard let destination = ExportPanel.runSave(
+                defaultName: suggestedExportName,
+                directory: folderURL,
+                pageCount: state.pages.count - missingPageCount,
+                missingCount: missingPageCount
+            ) else { return }
+            await exportPDF(to: destination, paper: exportOptions.paper)
+        } else {
+            guard let destination = ExportPanel.runChooseFolder(
+                directory: folderURL.deletingLastPathComponent(),
+                pageCount: state.pages.count - missingPageCount,
+                missingCount: missingPageCount
+            ) else { return }
+            await exportFiles(to: destination)
+        }
+    }
+
+    func exportFiles(to destination: URL) async {
+        guard let folderURL else { return }
+        isExporting = true
+        defer { isExporting = false }
+        lastError = nil
+        lastExport = nil
+
+        let pages = state.pages
+        let ratio = sharedRatio
+        let options = exportOptions
+        do {
+            let result = try await Task.detached(priority: .userInitiated) {
+                try FileExporter.export(
+                    pages: pages, folder: folderURL, to: destination,
+                    format: options.format, naming: options.naming, sharedRatio: ratio
+                )
+            }.value
+            lastExport = (destination, PDFExporter.Result(
+                exportedPages: result.writtenFiles.count,
+                skippedPages: result.skippedPages
+            ))
+        } catch {
+            lastError = "Export failed: \(error.localizedDescription)"
+        }
     }
 
     func exportPDF(to destination: URL, paper: PDFExporter.Paper) async {
@@ -570,40 +628,6 @@ final class DocumentStore {
 
     func report(error message: String) {
         lastError = message
-    }
-
-    /// Writes the edited pages as separate files into a folder the user picks.
-    func runFileExportFlow() async {
-        guard let folderURL, !state.pages.isEmpty else { return }
-        let panel = NSOpenPanel()
-        panel.title = "Export Cropped Files"
-        panel.message = "Choose a folder for the exported files."
-        panel.prompt = "Export"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = folderURL.deletingLastPathComponent()
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
-
-        isExporting = true
-        defer { isExporting = false }
-        lastError = nil
-
-        let pages = state.pages
-        let ratio = sharedRatio
-        do {
-            let result = try await Task.detached(priority: .userInitiated) {
-                try FileExporter.export(
-                    pages: pages, folder: folderURL, to: destination, sharedRatio: ratio
-                )
-            }.value
-            lastExport = (destination, PDFExporter.Result(
-                exportedPages: result.writtenFiles.count,
-                skippedPages: result.skippedPages
-            ))
-        } catch {
-            lastError = "Export failed: \(error.localizedDescription)"
-        }
     }
 
     // MARK: - Applying to the originals

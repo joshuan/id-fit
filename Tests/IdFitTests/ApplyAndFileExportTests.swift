@@ -104,13 +104,94 @@ import UniformTypeIdentifiers
         )
 
         #expect(result.skippedPages.isEmpty)
-        #expect(result.writtenFiles == ["01-doc-p2.pdf", "02-scan.png"])
+        #expect(result.writtenFiles == ["001.pdf", "002.png"])
 
         // The exported image really is only the red half.
-        let exported = destination.appendingPathComponent("02-scan.png")
+        let exported = destination.appendingPathComponent("002.png")
         #expect(isRed(try topColorOfPNG(at: exported)))
-        let size = try #require(SourceGeometry.shared.size(for: SourceRef(file: "02-scan.png"), in: destination))
+        let size = try #require(SourceGeometry.shared.size(for: SourceRef(file: "002.png"), in: destination))
         #expect(size == CGSize(width: 400, height: 300))
+    }
+
+    @Test func filesCanKeepTheNamesOfTheScansTheyCameFrom() throws {
+        let folder = try makeFolder()
+        let destination = try makeFolder()
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: folder.appendingPathComponent("scan.png"))
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 2, to: folder.appendingPathComponent("doc.pdf"))
+
+        let result = try FileExporter.export(
+            pages: [
+                Page(source: SourceRef(file: "scan.png")),
+                Page(source: SourceRef(file: "doc.pdf", pdfPage: 1)),
+            ],
+            folder: folder,
+            to: destination,
+            naming: .original
+        )
+
+        #expect(result.writtenFiles == ["scan.png", "doc-p2.pdf"])
+    }
+
+    @Test func aPageUsedTwiceDoesNotOverwriteItself() throws {
+        let folder = try makeFolder()
+        let destination = try makeFolder()
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: folder.appendingPathComponent("cover.png"))
+
+        // A passport cover is both the front and the back of the document.
+        let source = SourceRef(file: "cover.png")
+        let result = try FileExporter.export(
+            pages: [
+                Page(source: source, crop: CropRect(x: 0, y: 0, width: 1, height: 0.5)),
+                Page(source: source, crop: CropRect(x: 0, y: 0.5, width: 1, height: 0.5)),
+            ],
+            folder: folder,
+            to: destination,
+            naming: .original
+        )
+
+        #expect(result.writtenFiles == ["cover.png", "cover (2).png"])
+        // Two files, and they really do hold different halves.
+        #expect(isRed(try topColorOfPNG(at: destination.appendingPathComponent("cover.png"))))
+        let second = try topColorOfPNG(at: destination.appendingPathComponent("cover (2).png"))
+        #expect(second.b > 200 && second.r < 60)
+    }
+
+    @Test func exportingAsJPEGTurnsEveryPageIntoAnImage() throws {
+        let folder = try makeFolder()
+        let destination = try makeFolder()
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: folder.appendingPathComponent("scan.png"))
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 1, to: folder.appendingPathComponent("doc.pdf"))
+
+        let result = try FileExporter.export(
+            pages: [
+                Page(source: SourceRef(file: "scan.png"), crop: CropRect(x: 0, y: 0, width: 1, height: 0.5)),
+                // Even a PDF page comes out as an image here.
+                Page(source: SourceRef(file: "doc.pdf", pdfPage: 0)),
+            ],
+            folder: folder,
+            to: destination,
+            format: .jpeg
+        )
+
+        #expect(result.skippedPages.isEmpty)
+        #expect(result.writtenFiles == ["001.jpg", "002.jpg"])
+        for name in result.writtenFiles {
+            let size = try #require(SourceGeometry.shared.size(for: SourceRef(file: name), in: destination))
+            #expect(size.width > 0 && size.height > 0)
+        }
+        #expect(isRed(try topColorOfPNG(at: destination.appendingPathComponent("001.jpg"))))
     }
 
     @Test func fileExportLeavesSourcesUntouched() throws {

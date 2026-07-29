@@ -23,8 +23,21 @@ enum OriginalsWriter {
         makeBackup: Bool,
         sharedRatio: AspectRatio? = nil
     ) throws -> Result {
-        let edited = pages.filter { $0.crop != nil || $0.rotation != 0 || $0.quad != nil }
-        guard !edited.isEmpty else { return Result() }
+        let candidates = pages.filter { $0.crop != nil || $0.rotation != 0 || $0.quad != nil }
+
+        // A file that appears twice in the document cannot be rewritten: the
+        // two copies are framed differently and only one of them would fit.
+        var seen: [SourceRef: Int] = [:]
+        for page in pages { seen[page.source, default: 0] += 1 }
+        let duplicated = Set(seen.filter { $0.value > 1 }.keys)
+
+        let edited = candidates.filter { !duplicated.contains($0.source) }
+        var conflicts = Array(Set(candidates.filter { duplicated.contains($0.source) }
+            .map(\.source.displayName))).sorted()
+
+        guard !edited.isEmpty else {
+            return Result(failures: conflicts)
+        }
 
         var backupFolder: URL?
         if makeBackup {
@@ -33,7 +46,8 @@ enum OriginalsWriter {
             backupFolder = url
         }
 
-        var result = Result(backupFolder: backupFolder)
+        var result = Result(failures: conflicts, backupFolder: backupFolder)
+        conflicts = []
         // Group by file: a multi-page PDF must be rewritten once, not once
         // per page.
         let byFile = Dictionary(grouping: edited) { $0.source.file }

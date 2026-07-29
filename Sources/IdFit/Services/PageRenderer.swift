@@ -61,6 +61,23 @@ enum PageRenderer {
         return .image(rotate(cropped, by: page.rotation))
     }
 
+    /// Always pixels, whatever the source was — needed when writing an image
+    /// format, where a PDF page cannot stay vector.
+    static func image(for page: Page, in folder: URL, outputRatio: Double?) -> CGImage? {
+        guard let content = content(for: page, in: folder, outputRatio: outputRatio) else { return nil }
+        switch content {
+        case .image(let image):
+            return image
+        case .pdfPage:
+            let url = folder.appendingPathComponent(page.source.file)
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let rendered = ThumbnailProvider.shared.renderedImage(
+                      for: page.source, in: folder, maxPixel: 4000
+                  ) else { return nil }
+            return rotate(crop(rendered, to: page.crop), by: page.rotation)
+        }
+    }
+
     /// Straightening replaces the crop: the quad already says which part of
     /// the photograph is the document. A PDF page has to be rasterized first,
     /// since a warp cannot be expressed in vector page content.
