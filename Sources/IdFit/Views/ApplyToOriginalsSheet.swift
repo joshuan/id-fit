@@ -20,7 +20,7 @@ struct ApplyToOriginalsSheet: View {
             Text("\(editedCount) source file(s) in “\(store.folderName)” will be rewritten with their crop applied. This cannot be undone from inside the app.")
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Page order is not written into the files — it stays in .id-fit.json and in the exported PDF.")
+            Text("Page order is not written into the files — it stays in the folder's ID Fit document and in the exported PDF.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

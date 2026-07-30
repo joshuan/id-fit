@@ -94,9 +94,6 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-/// The whole persisted state of one working folder — the content of
-/// `.id-fit.json`. Everything the user does in the app (order, crops, ratio)
-/// lives here; source files are never modified implicitly.
 extension Page {
     /// The document's shape as this page must hold it.
     func outputRatio(sharedRatio: AspectRatio?) -> Double? {
@@ -105,6 +102,9 @@ extension Page {
     }
 }
 
+/// The whole persisted state of one working folder — the content of its
+/// `.idfit` document. Everything the user does (order, crops, ratio) lives
+/// here; source files are never modified implicitly.
 struct ProjectState: Codable, Equatable, Sendable {
     /// 2 repairs page orientations recorded by an earlier, unreliable guess.
     static let currentVersion = 2

@@ -77,7 +77,7 @@ import UniformTypeIdentifiers
         #expect(abs(CropGeometry.exportedRatio(crop, sourceSize: size) - passport) < 0.001)
     }
 
-    @Test func theRepairIsWrittenBackAndNotRedoneEveryTime() async throws {
+    @Test func theRepairIsWrittenBack() async throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         try writeLegacyState(to: folder, transposed: true)
@@ -89,14 +89,58 @@ import UniformTypeIdentifiers
         let saved = try #require(try StateStore.load(from: folder))
         #expect(saved.version == ProjectState.currentVersion)
         #expect(!saved.pages[0].transposedRatio)
+    }
 
-        // A page deliberately laid sideways afterwards stays that way.
-        store.toggleCropOrientation(forPageID: store.state.pages[0].id)
+    @Test func aStraightenedPageCannotBeLeftClaimingTheWrongShape() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try writeLegacyState(to: folder, transposed: false)
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let id = store.state.pages[0].id
+
+        // Laying a straightened page sideways asks for it to be stretched:
+        // the corners are what gets mapped onto the shape, so they win, and
+        // the page comes back upright rather than drifting out of true.
+        store.toggleCropOrientation(forPageID: id)
         store.saveImmediately()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
-        #expect(reopened.state.pages[0].transposedRatio)
+        #expect(!reopened.state.pages[0].transposedRatio)
+    }
+
+    @Test func turningAStraightenedPageKeepsItPointingTheRightWay() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try writeLegacyState(to: folder, transposed: false)
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let id = store.state.pages[0].id
+        let size = try #require(store.sourceSizes[store.state.pages[0].source])
+
+        // A quarter turn at a time, all the way round: at every step the shape
+        // the page claims must be the one its corners produce, or the export
+        // is stretched.
+        for _ in 0..<4 {
+            store.rotatePage(id: id, by: 90)
+            let page = store.state.pages[0]
+            let target = try #require(store.state.outputRatio(for: page))
+            let document = try #require(page.quad).rectifiedSize(sourceSize: size)
+            let produced = page.rotation % 180 == 0
+                ? document.width / document.height
+                : document.height / document.width
+            // The page must claim whichever way round is nearer to what its
+            // corners produce. The two are not equal — snapping a document to
+            // the shape it is meant to have is the point — but picking the
+            // further of the two is what stretches it.
+            let nearer = abs(produced - passport) <= abs(produced - 1 / passport)
+                ? passport
+                : 1 / passport
+            #expect(abs(target - nearer) < 0.0001)
+        }
     }
 
     @Test func aPageAlreadyPointingTheRightWayIsLeftAlone() async throws {

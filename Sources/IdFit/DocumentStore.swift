@@ -5,7 +5,7 @@ import Observation
 
 /// Central app state: the currently open working folder and its project
 /// state. All mutations go through this object; it never touches source
-/// files, only `.id-fit.json`.
+/// files, only the folder's `.idfit` document.
 @MainActor @Observable
 final class DocumentStore {
     private(set) var folderURL: URL?
@@ -109,12 +109,13 @@ final class DocumentStore {
                 .filter { !$0.autoDetected && $0.crop == nil }
                 .map(\.id)
 
-            if loaded.version < ProjectState.currentVersion {
-                repairOrientationsFromDetectedShapes()
-                state.version = ProjectState.currentVersion
-            }
+            state.version = ProjectState.currentVersion
+            alignOrientationsWithCorners()
             normalizeCropsToSharedRatio()
-            if state != loaded {
+            // A folder still kept by the old hidden dotfile is written out as
+            // a visible document even when nothing else changed, or it would
+            // keep its dotfile forever for want of an unrelated edit.
+            if state != loaded || StateStore.usesLegacyDocument(in: url) {
                 try StateStore.save(state, to: url)
             }
 
@@ -129,14 +130,14 @@ final class DocumentStore {
         }
     }
 
-    /// Fixes orientations recorded before the app learned to read a
-    /// document's shape from its own edges.
+    /// Points every straightened page whichever way its own corners lie.
     ///
-    /// A straightened page whose orientation disagrees with its corners is
-    /// not merely framed oddly — it is stretched, because straightening maps
-    /// those corners onto whatever shape the page claims to be. The corners
-    /// are the truth here, so they win.
-    private func repairOrientationsFromDetectedShapes() {
+    /// For a straightened page the orientation is not a preference but a
+    /// consequence: straightening maps the corners onto whatever shape the
+    /// page claims to be, so a page claiming the wrong one comes out
+    /// stretched. Deriving it on every open rather than trusting a stored
+    /// flag is what keeps the two from drifting apart.
+    private func alignOrientationsWithCorners() {
         for index in state.pages.indices {
             guard let quad = state.pages[index].quad else { continue }
             alignOrientation(ofPageAt: index, with: quad)
@@ -410,8 +411,13 @@ final class DocumentStore {
         guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
         state.pages[index].rotation = (((state.pages[index].rotation + degrees) % 360) + 360) % 360
 
-        // A quarter turn swaps the exported proportions; a half turn does not.
-        if (((degrees % 360) + 360) % 360) % 180 != 0 {
+        if let quad = state.pages[index].quad {
+            // Straightened: the corners say which way round the page must be,
+            // so read it off them instead of flipping a flag that could drift.
+            alignOrientation(ofPageAt: index, with: quad)
+        } else if (((degrees % 360) + 360) % 360) % 180 != 0 {
+            // A quarter turn swaps the exported proportions; a half turn does
+            // not.
             state.pages[index].transposedRatio.toggle()
         }
         scheduleSave()

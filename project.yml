@@ -31,7 +31,18 @@ targets:
         NSHumanReadableCopyright: ""
         # Lets Finder offer ID Fit under "Open With" for folders, and lets the
         # command line tool hand a folder over with `open -b`.
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: net.shershnev.id-fit.document
+            UTTypeDescription: ID Fit Document
+            UTTypeConformsTo: [public.json]
+            UTTypeTagSpecification:
+              public.filename-extension: [idfit]
         CFBundleDocumentTypes:
+          # Clicking the document opens the folder holding it.
+          - CFBundleTypeName: ID Fit Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes: [net.shershnev.id-fit.document]
           - CFBundleTypeName: Folder of Scans
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
