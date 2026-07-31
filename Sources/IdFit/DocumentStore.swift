@@ -34,6 +34,22 @@ final class DocumentStore {
     // MARK: - Opening
 
     private static let lastFolderKey = "lastFolderPath"
+    private static let recentFoldersKey = "recentFolderPaths"
+
+    /// Folders opened before, newest first, offered on the welcome screen.
+    private(set) var recentFolders: [URL] = []
+
+    init() {
+        let defaults = UserDefaults.standard
+        var paths = defaults.stringArray(forKey: Self.recentFoldersKey) ?? []
+        // A session saved before this list existed still knows its one folder.
+        if paths.isEmpty, let last = defaults.string(forKey: Self.lastFolderKey) {
+            paths = [last]
+        }
+        recentFolders = paths
+            .filter { !RecentFolders.isScratch($0) }
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
 
     /// Reopens whatever was open last time, so launching the app lands
     /// straight back in the document being worked on.
@@ -94,7 +110,7 @@ final class DocumentStore {
             state = reconciled
             missingSources = reconciled.missingSources(given: discovered)
             hasUnsavedChanges = false
-            UserDefaults.standard.set(url.path, forKey: Self.lastFolderKey)
+            rememberFolder(url)
             sourceSizes = await Task.detached(priority: .userInitiated) {
                 var sizes: [SourceRef: CGSize] = [:]
                 for ref in discovered {
@@ -128,6 +144,31 @@ final class DocumentStore {
             // user may have edits from another machine in it.
             lastError = "Could not open folder: \(error.localizedDescription)"
         }
+    }
+
+    /// Records the folder as the session to restore and at the head of the
+    /// recent list.
+    private func rememberFolder(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        // Scratch folders are not the work to come back to: they are wiped by
+        // the system, and the test suite opens dozens of them — which would
+        // otherwise leave the app reopening a folder that no longer exists.
+        guard !RecentFolders.isScratch(path) else { return }
+        UserDefaults.standard.set(path, forKey: Self.lastFolderKey)
+
+        let paths = RecentFolders.adding(path, to: recentFolders.map(\.path))
+        guard paths != recentFolders.map(\.path) else { return }
+        recentFolders = paths.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        UserDefaults.standard.set(paths, forKey: Self.recentFoldersKey)
+    }
+
+    /// Drops one folder from the recent list — the way out of a list filled
+    /// with folders that were only ever opened once.
+    func forgetRecentFolder(_ url: URL) {
+        let paths = recentFolders.map(\.path).filter { $0 != url.path }
+        guard paths.count != recentFolders.count else { return }
+        recentFolders = paths.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        UserDefaults.standard.set(paths, forKey: Self.recentFoldersKey)
     }
 
     /// Points every straightened page whichever way its own corners lie.
