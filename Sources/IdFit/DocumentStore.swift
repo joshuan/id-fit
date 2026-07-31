@@ -733,6 +733,67 @@ final class DocumentStore {
         commandLineNotice = nil
     }
 
+    // MARK: - Updates
+
+    private static let lastUpdateCheckKey = "lastUpdateCheck"
+
+    /// Set only when the news has to be delivered in the window: either the
+    /// check was asked for, or Notification Center refused to carry it.
+    private(set) var availableUpdate: UpdateChecker.Release?
+    /// Only ever set for a check somebody asked for: "you are up to date" is
+    /// an answer to a question, not an interruption.
+    private(set) var updateNotice: String?
+
+    /// The look on launch. Silent unless there is something to say, and at
+    /// most once a day — which is also what "Later" on the notification comes
+    /// to: nothing is recorded, so the next launch a day or more on asks
+    /// again.
+    func checkForUpdatesIfDue() async {
+        let last = UserDefaults.standard.object(forKey: Self.lastUpdateCheckKey) as? Date
+        guard UpdateSchedule.isDue(lastCheck: last, now: Date()) else { return }
+        await runUpdateCheck(userInitiated: false)
+    }
+
+    func checkForUpdates() async {
+        await runUpdateCheck(userInitiated: true)
+    }
+
+    private func runUpdateCheck(userInitiated: Bool) async {
+        let current = UpdateChecker.runningVersion
+        do {
+            let outcome = try await UpdateChecker.check(currentVersion: current)
+            UserDefaults.standard.set(Date(), forKey: Self.lastUpdateCheckKey)
+            switch outcome {
+            case .upToDate:
+                if userInitiated {
+                    updateNotice = "ID Fit \(current) is the latest version."
+                }
+            case .available(let release):
+                if userInitiated {
+                    // A question asked out loud gets its answer on the spot,
+                    // not a banner that may be turned off entirely.
+                    availableUpdate = release
+                } else if await UpdateNotifier.post(release: release, currentVersion: current) == false {
+                    availableUpdate = release
+                }
+            }
+        } catch {
+            // A check nobody asked for stays quiet when it fails. Being
+            // offline is not news, and the app works offline anyway.
+            if userInitiated {
+                updateNotice = "Could not check for updates: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func dismissUpdate() {
+        availableUpdate = nil
+    }
+
+    func clearUpdateNotice() {
+        updateNotice = nil
+    }
+
     func report(error message: String) {
         lastError = message
     }

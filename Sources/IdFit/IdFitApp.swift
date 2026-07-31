@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @main
 struct IdFitApp: App {
@@ -13,6 +14,9 @@ struct IdFitApp: App {
         }
         .commands {
             CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    Task { await store.checkForUpdates() }
+                }
                 Button("Install Command Line Tool…") { installCommandLineTool() }
             }
             CommandGroup(replacing: .newItem) {
@@ -56,6 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.servicesProvider = serviceProvider
         NSUpdateDynamicServices()
+
+        UNUserNotificationCenter.current().delegate = self
+        UpdateNotifier.registerCategory()
     }
 
     func attach(store: DocumentStore) {
@@ -88,6 +95,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Task { await store.openFolderOrParent(of: url) }
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// The update check runs at launch, when the app is the frontmost thing on
+    /// screen — and macOS hides notifications from the frontmost app unless it
+    /// says otherwise.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner, .list]
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse
+    ) async {
+        // Read here rather than on the main actor: the response cannot cross,
+        // but the URL it carries can.
+        guard let page = UpdateNotifier.page(for: response) else { return }
+        await MainActor.run { NSWorkspace.shared.open(page) }
     }
 }
 
