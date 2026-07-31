@@ -26,6 +26,7 @@ struct QuadCanvas: View {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .frame(width: frame.width, height: frame.height)
+                    .shadow(color: .black.opacity(0.5), radius: 16, y: 6)
                     .offset(x: frame.minX, y: frame.minY)
 
                 // Everything outside the document is dimmed, so the corners

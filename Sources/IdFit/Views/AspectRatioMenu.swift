@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The document-wide crop ratio picker. Shown both in the main toolbar and in
-/// the crop editor — the editor is modal, so a control only available behind
-/// it would be a dead end.
+/// The document-wide crop ratio picker. It belongs in the window's toolbar
+/// rather than beside the crop controls: the ratio is a property of the whole
+/// document, not of the page being framed, and framing now happens in the same
+/// window, so the toolbar stays within reach.
 struct AspectRatioMenu: View {
     let store: DocumentStore
     @Binding var isEditingCustom: Bool

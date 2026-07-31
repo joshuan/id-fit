@@ -1,231 +1,9 @@
 import SwiftUI
 
-/// Full-page crop editor. The aspect ratio is fixed document-wide, so the
-/// user only frames the content; the rectangle can never change shape.
-///
-/// Everything here works in the page's *rotated* space — what the export will
-/// look like — and crops are converted back to source space on the way out.
-struct CropEditorView: View {
-    let store: DocumentStore
-    @State var pageIndex: Int
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var preview: CGImage?
-    @State private var isEditingCustomRatio = false
-
-    private var page: Page? {
-        store.state.pages.indices.contains(pageIndex) ? store.state.pages[pageIndex] : nil
-    }
-
-    /// Source size as seen after rotation.
-    private var displayedSize: CGSize? {
-        guard let page, let size = store.sourceSizes[page.source] else { return nil }
-        return page.rotation % 180 == 0 ? size : CGSize(width: size.height, height: size.width)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            canvas
-            Divider()
-            footer
-        }
-        .frame(minWidth: 760, minHeight: 580)
-        .task(id: page.map(PagePreviewKey.init)) { await loadPreview() }
-        .sheet(isPresented: $isEditingCustomRatio) {
-            CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
-                store.setAspectRatio(ratio)
-            }
-        }
-    }
-
-    private var header: some View {
-        HStack {
-            Button {
-                pageIndex -= 1
-            } label: {
-                Label("Previous", systemImage: "chevron.left")
-            }
-            .disabled(pageIndex == 0)
-            .keyboardShortcut(.leftArrow, modifiers: [])
-
-            Button {
-                pageIndex += 1
-            } label: {
-                Label("Next", systemImage: "chevron.right")
-            }
-            .disabled(pageIndex >= store.state.pages.count - 1)
-            .keyboardShortcut(.rightArrow, modifiers: [])
-
-            Spacer()
-
-            VStack(spacing: 2) {
-                Text("Page \(pageIndex + 1) of \(store.state.pages.count)")
-                    .font(.headline)
-                if let page {
-                    Text(page.source.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
-                .fixedSize()
-
-            Button {
-                if let page { store.rotatePage(id: page.id, by: -90) }
-            } label: {
-                Label("Rotate Left", systemImage: "rotate.left")
-            }
-            .keyboardShortcut("[", modifiers: .command)
-
-            Button {
-                if let page { store.rotatePage(id: page.id, by: 90) }
-            } label: {
-                Label("Rotate Right", systemImage: "rotate.right")
-            }
-            .keyboardShortcut("]", modifiers: .command)
-
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
-        }
-        .padding(12)
-    }
-
-    @ViewBuilder
-    private var canvas: some View {
-        if let page, let size = displayedSize, let preview {
-            Group {
-                if let quad = page.quad {
-                    // Straightened: the four corners are what matters, and
-                    // they need not form a rectangle.
-                    QuadCanvas(
-                        image: preview,
-                        displayedSize: size,
-                        quad: DocumentQuadGeometry.rotated(quad, by: page.rotation)
-                    ) { edited in
-                        store.setQuad(
-                            DocumentQuadGeometry.rotated(edited, by: -page.rotation),
-                            forPageID: page.id
-                        )
-                    }
-                } else {
-                    CropCanvas(
-                        image: preview,
-                        displayedSize: size,
-                        crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
-                        outputRatio: store.state.outputRatio(for: page),
-                        onChange: { edited in
-                            store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
-                        },
-                        onDraw: { drawn in
-                            store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
-                        },
-                        onDistort: { quad in
-                            store.setQuad(
-                                DocumentQuadGeometry.rotated(quad, by: -page.rotation),
-                                forPageID: page.id
-                            )
-                        }
-                    )
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let page, store.missingSources.contains(page.source) {
-            ContentUnavailableView(
-                "File is missing",
-                systemImage: "exclamationmark.triangle",
-                description: Text("\(page.source.file) is not in the folder right now. Its crop is kept.")
-            )
-        } else {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-
-    private var footer: some View {
-        HStack {
-            if store.state.cropAspectRatio == nil {
-                Label(
-                    "Drag on the page to draw a crop — its shape becomes the ratio for every page. Or pick a preset above.",
-                    systemImage: "hand.draw"
-                )
-                .foregroundStyle(.secondary)
-                .font(.callout)
-            } else {
-                Toggle("Straighten", isOn: Binding(
-                    get: { page?.quad != nil },
-                    set: { _ in if let page { store.toggleStraightening(forPageID: page.id) } }
-                ))
-                .toggleStyle(.checkbox)
-                .help("Map the document's four corners onto a true rectangle")
-
-                if page?.quad == nil {
-                    Button(orientationButtonTitle) {
-                        if let page { store.toggleCropOrientation(forPageID: page.id) }
-                    }
-                    .help("Use the document's shape the other way round on this page")
-                }
-                Button("Detect Edges") {
-                    if let page {
-                        Task { await store.redetectEdges(forPageIDs: [page.id]) }
-                    }
-                }
-                .disabled(store.isDetectingEdges)
-                if page?.quad == nil {
-                    Button("Reset Crop") {
-                        if let page { store.resetCrop(forPageID: page.id) }
-                    }
-                    Button("Apply This Framing to All Pages") {
-                        if let page { store.applyCropToAllPages(fromPageID: page.id) }
-                    }
-                    .disabled(page?.crop == nil)
-                }
-            }
-            if store.state.cropAspectRatio != nil, page?.quad == nil {
-                Text("Hold ⌘ while dragging a corner to correct perspective.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if store.isDetectingEdges {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Finding edges…").foregroundStyle(.secondary)
-                }
-                .font(.callout)
-            }
-        }
-        .padding(12)
-    }
-
-    /// Names the shape the button would switch to, not the current one.
-    private var orientationButtonTitle: String {
-        guard let page, let ratio = store.state.outputRatio(for: page) else {
-            return "Flip Crop Orientation"
-        }
-        return ratio >= 1 ? "Make Crop Upright" : "Lay Crop Sideways"
-    }
-
-    private func loadPreview() async {
-        preview = nil
-        guard let page, let folder = store.folderURL else { return }
-        guard let image = await ThumbnailProvider.shared.thumbnail(
-            for: page.source, in: folder, maxPixel: 1600
-        ) else { return }
-        // Rotate once here rather than on every redraw.
-        preview = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)
-    }
-}
-
 /// Draws the page with a dimmed area outside the crop and drag handles on the
 /// corners. Editing happens in the page's rotated pixel space, which is the
 /// same space the exported image lives in.
-private struct CropCanvas: View {
+struct CropCanvas: View {
     let image: CGImage
     let displayedSize: CGSize
     let crop: CropRect?
@@ -259,6 +37,7 @@ private struct CropCanvas: View {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .frame(width: frame.width, height: frame.height)
+                    .shadow(color: .black.opacity(0.5), radius: 16, y: 6)
                     .offset(x: frame.minX, y: frame.minY)
 
                 if outputRatio == nil {
@@ -320,6 +99,16 @@ private struct CropCanvas: View {
                             .contentShape(Rectangle())
                             .pointerStyle(isMovingCrop ? .grabActive : .grabIdle)
                             .gesture(moveGesture(crop: crop, frame: frame))
+
+                        // Thirds are how a page gets placed by eye, so they
+                        // appear for as long as it is being placed.
+                        if gestureStart != nil {
+                            ThirdsGuides()
+                                .stroke(.white.opacity(0.4), lineWidth: 0.5)
+                                .frame(width: rect.width, height: rect.height)
+                                .offset(x: rect.minX, y: rect.minY)
+                                .allowsHitTesting(false)
+                        }
                     }
 
                     ForEach(CropGeometry.Corner.allCases, id: \.self) { corner in
@@ -328,6 +117,7 @@ private struct CropCanvas: View {
                         Circle()
                             .fill(.white)
                             .overlay(Circle().strokeBorder(.black.opacity(0.4), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.35), radius: 3, y: 1)
                             .frame(width: handleSize, height: handleSize)
                             // A generous invisible target around the dot, so
                             // the corner is easy to grab.
@@ -504,3 +294,18 @@ private struct CropCanvas: View {
     }
 }
 
+/// The rule-of-thirds lines drawn inside the crop while it is being placed.
+private struct ThirdsGuides: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for step in 1...2 {
+            let x = rect.minX + rect.width * CGFloat(step) / 3
+            path.move(to: CGPoint(x: x, y: rect.minY))
+            path.addLine(to: CGPoint(x: x, y: rect.maxY))
+            let y = rect.minY + rect.height * CGFloat(step) / 3
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: rect.maxX, y: y))
+        }
+        return path
+    }
+}

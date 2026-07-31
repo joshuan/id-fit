@@ -1,25 +1,23 @@
 import SwiftUI
 
+/// The board of pages: reorder by dragging, pick pages for batch actions, and
+/// click one to frame it. Framing itself happens in `PageEditorView`, which
+/// takes this view's place in the window.
 struct PagesGridView: View {
-    @Bindable var store: DocumentStore
+    let store: DocumentStore
+    @Binding var selection: Set<UUID>
+    @Binding var selectionAnchor: UUID?
+    /// Opens a page in the editor.
+    let onOpen: (UUID) -> Void
 
     @State private var drag: DragState?
     @State private var cellFrames: [UUID: CGRect] = [:]
-    @State private var editorTarget: EditorTarget?
-    @State private var isEditingCustomRatio = false
-    @State private var isConfirmingApply = false
-    @State private var selection: Set<UUID> = []
-    @State private var selectionAnchor: UUID?
 
     private static let boardSpace = "board"
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
 
     var body: some View {
         VStack(spacing: 0) {
-            if !store.missingSources.isEmpty {
-                missingBanner
-                Divider()
-            }
             if selection.count > 1 {
                 selectionBar
                 Divider()
@@ -44,86 +42,6 @@ struct PagesGridView: View {
                 )
             }
         }
-        .navigationTitle(store.folderName)
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                Group {
-                    if store.isDetectingEdges {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Finding edges…")
-                        }
-                    } else {
-                        Text(store.state.pages.count == 1 ? "1 page" : "\(store.state.pages.count) pages")
-                            .monospacedDigit()
-                    }
-                }
-                // The toolbar draws its own capsule tight around the content;
-                // without this the text sits flush against it.
-                .padding(.horizontal, 8)
-                .foregroundStyle(.secondary)
-            }
-            ToolbarItem {
-                AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
-            }
-            ToolbarItem {
-                Button("Export…", systemImage: "square.and.arrow.up") {
-                    store.isPresentingExport = true
-                }
-                .disabled(store.state.pages.isEmpty || store.isExporting)
-            }
-            ToolbarItem {
-                Menu {
-                    Button("Select All Pages") {
-                        selection = Set(store.state.pages.map(\.id))
-                    }
-                    .keyboardShortcut("a", modifiers: .command)
-                    Divider()
-                    Button("Detect Edges on All Pages") {
-                        Task { await store.redetectEdgesOnAllPages() }
-                    }
-                    .disabled(store.isDetectingEdges)
-                    Toggle("Straighten Photographed Documents", isOn: Binding(
-                        get: { store.state.straightenByDefault },
-                        set: { store.setStraightenByDefault($0) }
-                    ))
-                    Divider()
-                    Button("Apply Changes to Original Files…", role: .destructive) {
-                        isConfirmingApply = true
-                    }
-                    .disabled(!hasEdits)
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle")
-                }
-                .disabled(store.state.pages.isEmpty || store.isExporting)
-            }
-            ToolbarItem {
-                Button("Open Folder…", systemImage: "folder") {
-                    store.isPickingFolder = true
-                }
-            }
-        }
-        .sheet(item: $editorTarget) { target in
-            CropEditorView(store: store, pageIndex: target.id)
-        }
-        .sheet(isPresented: $isEditingCustomRatio) {
-            CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
-                store.setAspectRatio(ratio)
-            }
-        }
-        .sheet(isPresented: $isConfirmingApply) {
-            ApplyToOriginalsSheet(store: store)
-        }
-        .sheet(isPresented: $store.isPresentingExport) {
-            ExportSheet(store: store)
-        }
-        .overlay {
-            if store.isExporting {
-                ProgressView("Exporting…")
-                    .padding(24)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            }
-        }
     }
 
     /// Appears once more than one page is picked, so a batch of scans off by
@@ -137,13 +55,15 @@ struct PagesGridView: View {
             Button {
                 store.rotatePages(ids: orderedSelection, by: -90)
             } label: {
-                Label("Rotate Left", systemImage: "rotate.left")
+                Label("Rotate Left", systemImage: "rotate.left").labelStyle(.iconOnly)
             }
+            .help("Rotate left")
             Button {
                 store.rotatePages(ids: orderedSelection, by: 90)
             } label: {
-                Label("Rotate Right", systemImage: "rotate.right")
+                Label("Rotate Right", systemImage: "rotate.right").labelStyle(.iconOnly)
             }
+            .help("Rotate right")
 
             Spacer()
 
@@ -159,43 +79,32 @@ struct PagesGridView: View {
         store.state.pages.map(\.id).filter(selection.contains)
     }
 
-    private var missingBanner: some View {
-        HStack {
-            Label(
-                "\(missingPageCount) page(s) can't find their file. Their edits are kept in case the folder is still syncing.",
-                systemImage: "exclamationmark.triangle.fill"
-            )
-            .font(.callout)
-            Spacer()
-            Button("Remove Them") { store.removeMissingPages() }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(.orange.opacity(0.15))
-    }
-
-    private var missingPageCount: Int {
-        store.state.pages.filter { store.missingSources.contains($0.source) }.count
-    }
-
     private var grid: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(Array(store.state.pages.enumerated()), id: \.element.id) { index, page in
-                    cell(page: page, index: index)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 16) {
+                    ForEach(Array(store.state.pages.enumerated()), id: \.element.id) { index, page in
+                        cell(page: page, index: index)
+                    }
                 }
+                .padding()
+                // Only the slots animate; the dragged card tracks the cursor
+                // directly, so it must not be part of this animation.
+                .animation(.snappy(duration: 0.25), value: store.state.pages.map(\.id))
+                .frame(maxWidth: .infinity, minHeight: 400, alignment: .top)
+                .background(
+                    // Clicking past the pages clears the selection.
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { selection.removeAll() }
+                )
             }
-            .padding()
-            // Only the slots animate; the dragged card tracks the cursor
-            // directly, so it must not be part of this animation.
-            .animation(.snappy(duration: 0.25), value: store.state.pages.map(\.id))
-            .frame(maxWidth: .infinity, minHeight: 400, alignment: .top)
-            .background(
-                // Clicking past the pages clears the selection.
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { selection.removeAll() }
-            )
+            .onAppear {
+                // Coming back from the editor, land on the page that was being
+                // framed rather than at the top of a long folder.
+                guard let anchor = selectionAnchor else { return }
+                proxy.scrollTo(anchor, anchor: .center)
+            }
         }
     }
 
@@ -227,11 +136,10 @@ struct PagesGridView: View {
                     .strokeBorder(Color.accentColor, lineWidth: 3)
             }
         }
-        .onTapGesture(count: 2) { editorTarget = EditorTarget(id: index) }
-        .onTapGesture { select(page: page, at: index) }
+        .onTapGesture { click(page: page, at: index) }
         .contextMenu {
             Button(selectionApplies(to: page) ? "Crop First Selected…" : "Crop…") {
-                editorTarget = EditorTarget(id: index)
+                onOpen(page.id)
             }
             Divider()
             Button(rotateTitle("Rotate Left", page: page)) {
@@ -271,19 +179,23 @@ struct PagesGridView: View {
         selectionApplies(to: page) ? "\(base) (\(selection.count) pages)" : base
     }
 
-    private func select(page: Page, at index: Int) {
+    /// A plain click opens the page — that is what the grid is for. Holding
+    /// Command or Shift builds a selection for the batch actions instead, and
+    /// deliberately does not open anything.
+    private func click(page: Page, at index: Int) {
         let modifiers = NSEvent.modifierFlags
         if modifiers.contains(.command) {
             if selection.contains(page.id) { selection.remove(page.id) } else { selection.insert(page.id) }
+            selectionAnchor = page.id
         } else if modifiers.contains(.shift), let anchor = selectionAnchor,
                   let from = store.state.pages.firstIndex(where: { $0.id == anchor }) {
             let range = from <= index ? from...index : index...from
             selection.formUnion(store.state.pages[range].map(\.id))
-            return
         } else {
             selection = [page.id]
+            selectionAnchor = page.id
+            onOpen(page.id)
         }
-        selectionAnchor = page.id
     }
 
     @ViewBuilder
@@ -367,123 +279,5 @@ struct PagesGridView: View {
             }
         }
         return best?.index
-    }
-
-    private var hasEdits: Bool {
-        store.state.pages.contains { $0.crop != nil || $0.rotation != 0 }
-    }
-
-    struct EditorTarget: Identifiable {
-        let id: Int
-    }
-}
-
-struct PageCell: View {
-    let page: Page
-    let number: Int
-    let folder: URL
-    let outputRatio: Double?
-    let isMissing: Bool
-
-    @State private var thumbnail: CGImage?
-
-    private var caption: String {
-        if let pdfPage = page.source.pdfPage {
-            return "\(page.source.file) · p\(pdfPage + 1)"
-        }
-        return page.source.file
-    }
-
-    var body: some View {
-        VStack(spacing: 6) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(.quaternary.opacity(0.5))
-                if let thumbnail {
-                    // Show the page as it will be exported: rotated, cropped.
-                    CroppedImage(
-                        image: thumbnail,
-                        // A straightened page is already exactly its own
-                        // content; there is nothing left to crop off.
-                        crop: page.quad == nil
-                            ? page.crop.map { CropGeometry.rotated($0, by: page.rotation) }
-                            : nil,
-                        outputRatio: outputRatio
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .padding(4)
-                } else if isMissing {
-                    VStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.title)
-                            .foregroundStyle(.orange)
-                        Text("File missing")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-            .frame(height: 190)
-            .overlay(alignment: .topLeading) {
-                Text("\(number)")
-                    .font(.caption.bold())
-                    .monospacedDigit()
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(.thinMaterial, in: Capsule())
-                    .padding(6)
-            }
-
-            Text(caption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .contentShape(Rectangle())
-        .task(id: PageThumbnailKey(page)) {
-            guard !isMissing else { return }
-            guard let image = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder) else { return }
-
-            // Straightened pages are shown straightened, so the grid matches
-            // what the export will contain.
-            if let quad = page.quad, let outputRatio {
-                let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: page.rotation)
-                if let corrected = PerspectiveCorrector.straighten(image, quad: quad, targetAspect: aspect) {
-                    thumbnail = PageRenderer.rotate(corrected, by: page.rotation)
-                    return
-                }
-            }
-            thumbnail = page.rotation == 0 ? image : PageRenderer.rotate(image, by: page.rotation)
-        }
-    }
-}
-
-/// Renders only the cropped region of an image, at the shared output ratio.
-private struct CroppedImage: View {
-    let image: CGImage
-    let crop: CropRect?
-    let outputRatio: Double?
-
-    var body: some View {
-        if let crop, let outputRatio, crop.width > 0, crop.height > 0 {
-            GeometryReader { geometry in
-                let fullWidth = geometry.size.width / crop.width
-                let fullHeight = geometry.size.height / crop.height
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .frame(width: fullWidth, height: fullHeight)
-                    .offset(x: -crop.x * fullWidth, y: -crop.y * fullHeight)
-            }
-            .aspectRatio(outputRatio, contentMode: .fit)
-            .clipped()
-        } else {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .scaledToFit()
-        }
     }
 }

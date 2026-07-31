@@ -7,12 +7,15 @@ struct ContentView: View {
     var body: some View {
         Group {
             if store.folderURL != nil {
-                PagesGridView(store: store)
+                WorkspaceView(store: store)
             } else {
                 WelcomeView(store: store)
             }
         }
-        .frame(minWidth: 640, minHeight: 480)
+        // Roomy enough for the editor: a control bar, the page, and the
+        // filmstrip all share the window now, and the bar's controls stop
+        // fitting side by side below this.
+        .frame(minWidth: 880, minHeight: 620)
         .fileImporter(isPresented: $store.isPickingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
                 Task { await store.openFolder(url) }

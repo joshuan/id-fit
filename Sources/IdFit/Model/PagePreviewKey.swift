@@ -16,10 +16,13 @@ struct PagePreviewKey: Hashable {
     }
 }
 
-/// Identifies the picture a grid cell shows — the page as it will be
-/// exported, straightening included but not the crop, which is drawn as an
-/// overlay. Corner edits happen in the modal editor, so unlike the editor's
-/// own preview this key can safely follow them.
+/// Identifies the picture a grid or filmstrip cell shows — the page as it will
+/// be exported, straightening included but not the crop, which is drawn as an
+/// overlay.
+///
+/// Unlike the editor's own preview this key does follow corner edits: a cell
+/// shows the straightened result, so it has to be redrawn when the corners
+/// move. The cell waits for a drag to settle before acting on it.
 struct PageThumbnailKey: Hashable {
     let preview: PagePreviewKey
     let quad: DocumentQuad?
