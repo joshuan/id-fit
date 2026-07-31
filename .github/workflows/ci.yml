@@ -11,7 +11,10 @@ concurrency:
 
 jobs:
   test:
-    runs-on: macos-15
+    # macos-26 for its Xcode 26. The sources rely on the concurrency rules of
+    # that toolchain and do not compile under the Xcode 16 on macos-15, even
+    # though the app itself still deploys back to macOS 15.
+    runs-on: macos-26
     env:
       # /Applications/Xcode.app is a symlink to the runner's default Xcode.
       # Pin a versioned path here if a specific one is ever needed.
