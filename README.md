@@ -32,6 +32,16 @@ Besides **File → Open Folder…** and dropping a folder on the window:
 
 macOS 15 or later.
 
+## Installing
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/joshuan/id-fit/main/install.sh | sh
+```
+
+This downloads the latest [release](https://github.com/joshuan/id-fit/releases), puts `IdFit.app` in `/Applications` and tells Finder about it, so *Open With* and the *Services* entry work right away. Pin a version with `IDFIT_VERSION=v1.2.3` in front of the command.
+
+You can also download `IdFit.zip` from the releases page and drag the app into `/Applications` yourself. One extra step comes with it: builds are signed ad-hoc rather than notarized by Apple, and macOS refuses to open an app it got from a browser under those terms. Open **System Settings → Privacy & Security**, find the message about ID Fit and press **Open Anyway** — once per version. The script above is not a workaround for a security check so much as a different delivery route: macOS only applies that check to files a browser marked as downloaded.
+
 ## Building
 
 Xcode is required. The Xcode project itself is generated, so there is nothing to open before the first build.
@@ -42,3 +52,11 @@ make run       # build and launch
 make test      # run the unit tests
 make package   # Release build, ad-hoc signed, into dist/
 ```
+
+Tests run on every push and pull request. Pushing a `v*` tag builds a release, packages it and publishes it to GitHub Releases:
+
+```sh
+git tag v1.2.3 && git push origin v1.2.3
+```
+
+The tag becomes the bundle's version. The release workflow signs with a Developer ID and notarizes when the repository has the secrets for it, and falls back to ad-hoc signing when it doesn't — see the comments in `.github/workflows/release.yml`.

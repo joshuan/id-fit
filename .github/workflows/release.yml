@@ -1,0 +1,123 @@
+name: Release
+
+# Tag a commit to cut a release:
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# Without signing secrets the workflow publishes an ad-hoc signed build, which
+# is installable through install.sh (see the release notes it writes). Add the
+# secrets listed under "Sign with Developer ID" and the same workflow starts
+# producing a notarized build instead — nothing else changes.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Test
+        run: make test
+
+      # Secrets cannot be read from a step's `if:`, so their presence is turned
+      # into an output first.
+      - name: Look for signing secrets
+        id: signing
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+        run: |
+          if [ -n "$CERTIFICATE" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Developer ID secrets found — publishing an ad-hoc signed build."
+          fi
+
+      # Needs MACOS_CERTIFICATE_P12 (base64 of the exported Developer ID
+      # Application .p12), MACOS_CERTIFICATE_PASSWORD and MACOS_SIGN_IDENTITY
+      # (e.g. "Developer ID Application: Name (TEAMID)").
+      - name: Sign with Developer ID
+        if: steps.signing.outputs.available == 'true'
+        env:
+          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ github.run_id }}
+        run: |
+          echo "$CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security import "$RUNNER_TEMP/certificate.p12" -k build.keychain \
+            -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain > /dev/null
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      - name: Package
+        env:
+          SIGN_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.MACOS_SIGN_IDENTITY || '-' }}
+          # A secure timestamp needs a real identity, so ad-hoc builds omit it.
+          CODESIGN_FLAGS: ${{ steps.signing.outputs.available == 'true' && '--options runtime --timestamp' || '--options runtime' }}
+        run: |
+          make package \
+            VERSION="${GITHUB_REF_NAME#v}" \
+            BUILD="${{ github.run_number }}" \
+            SIGN_IDENTITY="$SIGN_IDENTITY" \
+            CODESIGN_FLAGS="$CODESIGN_FLAGS"
+
+      # Needs AC_API_KEY_P8 (contents of the App Store Connect .p8 key),
+      # AC_API_KEY_ID and AC_API_ISSUER_ID.
+      - name: Notarize and staple
+        if: steps.signing.outputs.available == 'true'
+        env:
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$AC_API_KEY_P8" > "$key"
+          xcrun notarytool submit dist/IdFit.zip \
+            --key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID" \
+            --wait
+          # The ticket is stapled to the bundle, so the archive has to be built
+          # again from the stapled app.
+          xcrun stapler staple dist/IdFit.app
+          rm -f "$key" dist/IdFit.zip
+          ditto -c -k --keepParent dist/IdFit.app dist/IdFit.zip
+          xcrun stapler validate dist/IdFit.app
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTARIZED: ${{ steps.signing.outputs.available }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          {
+            echo "## Install"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/install.sh | sh"
+            echo '```'
+            echo
+            if [ "$NOTARIZED" = "true" ]; then
+              echo "Or download \`IdFit.zip\` below, unpack it and drag \`IdFit.app\` into \`/Applications\`."
+            else
+              echo "Or download \`IdFit.zip\` below and drag \`IdFit.app\` into \`/Applications\`. This build is signed ad-hoc rather than notarized by Apple, so opening it that way is refused the first time: go to **System Settings → Privacy & Security**, find the message about ID Fit and press **Open Anyway**. The command above installs without that step."
+            fi
+            echo
+            echo "Requires macOS 15 or later."
+          } > "$notes"
+          gh release create "$GITHUB_REF_NAME" dist/IdFit.zip \
+            --title "ID Fit ${GITHUB_REF_NAME#v}" \
+            --notes-file "$notes"
