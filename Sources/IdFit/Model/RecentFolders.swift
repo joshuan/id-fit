@@ -31,11 +31,18 @@ enum RecentFolders {
         }
     }
 
-    /// Both the plain and the resolved spelling of each root: `/tmp` is a
-    /// symlink to `/private/tmp`, and a path can arrive either way round.
+    /// Every spelling of each root: `/tmp` is a symlink to `/private/tmp`, and
+    /// a path can arrive either way round.
+    ///
+    /// Resolving the path being tested is not enough on its own. Foundation
+    /// strips a leading `/private` only when what remains is a folder that
+    /// exists, so a temporary folder the system has already deleted keeps the
+    /// long spelling — which is exactly when this question gets asked. The
+    /// long spelling has to be a root in its own right.
     private static var scratchRoots: [String] {
         let roots = ["/tmp", "/var/tmp", "/var/folders", NSTemporaryDirectory()]
         return roots.flatMap { [$0, ($0 as NSString).resolvingSymlinksInPath] }
             .map { $0.hasSuffix("/") ? String($0.dropLast()) : $0 }
+            .flatMap { $0.hasPrefix("/private/") ? [$0] : [$0, "/private" + $0] }
     }
 }
