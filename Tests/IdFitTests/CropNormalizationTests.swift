@@ -44,7 +44,7 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         store.setAspectRatio(AspectRatio(width: 210, height: 297))
-        store.saveImmediately()
+        store.saveDocument()
 
         // The folder is still syncing: one file disappears.
         let stashed = try Data(contentsOf: away)
@@ -55,7 +55,7 @@ import UniformTypeIdentifiers
         #expect(offline.missingSources == [SourceRef(file: "away.png")])
         // The ratio changes while that page cannot be measured.
         offline.setAspectRatio(AspectRatio(width: 85.6, height: 54))
-        offline.saveImmediately()
+        offline.saveDocument()
 
         // Its crop is untouched and therefore still A4-shaped.
         let stale = try #require(offline.state.pages.first { $0.source.file == "away.png" }?.crop)
@@ -110,7 +110,7 @@ import UniformTypeIdentifiers
             sourceSize: CGSize(width: 600, height: 400)
         )
         store.setCrop(moved, forPageID: page.id)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

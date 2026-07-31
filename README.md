@@ -14,7 +14,7 @@ You scanned your passport and ended up with 20 files — some A4, some re-scanne
 - **Crops each page individually, with one aspect ratio shared by the whole document**, so the export comes out uniform even when the sources differ in size and DPI. Presets for A4, US Letter, ID card, passport photo and square, plus a custom ratio — or just drag a rectangle on a page and its shape becomes the ratio for all of them.
 - **Rotates pages** in 90° steps.
 - **Exports to PDF** — pages in your order, crops applied, at full resolution. PDF sources stay vector rather than being rasterized. Choose A4, US Letter, or a page that fits the content exactly.
-- **Remembers everything in a `.idfit` document inside the folder.** Double-click it to reopen the folder here. No absolute paths, nothing stored elsewhere: sync the folder to another computer, open it there, and the order and crops are exactly as you left them.
+- **Remembers everything in a `.idfit` document inside the folder**, once you save one. Opening a folder leaves nothing in it; **Save** (⌘S) writes the document, named after the folder. From then on your edits go into it as you make them, and closing the folder or quitting with work that was never saved asks first. Double-click the document to reopen the folder here. No absolute paths, nothing stored elsewhere: sync the folder to another computer, open it there, and the order and crops are exactly as you left them.
 
 Two explicit, separate actions can touch files:
 

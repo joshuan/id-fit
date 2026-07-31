@@ -23,6 +23,11 @@ struct IdFitApp: App {
                 Button("Open Folder…") { store.isPickingFolder = true }
                     .keyboardShortcut("o", modifiers: .command)
             }
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") { store.saveDocument() }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!store.canSave)
+            }
             CommandGroup(replacing: .importExport) {
                 Button("Export…") {
                     store.isPresentingExport = true
@@ -68,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func attach(store: DocumentStore) {
         guard self.store !== store else { return }
         self.store = store
+        // The store keeps the question; the app supplies the screen to ask it
+        // on. Without this it never asks, which is what tests want.
+        store.confirmDiscard = { documentName, folderName in
+            UnsavedChangesPrompt.ask(documentName: documentName, folderName: folderName)
+        }
         if let pendingURL {
             self.pendingURL = nil
             open(pendingURL)
@@ -83,6 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// Quitting a folder that was never saved would take the work with it.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store else { return .terminateNow }
+        return store.confirmDiscardingChanges() ? .terminateNow : .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {

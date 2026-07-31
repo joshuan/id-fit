@@ -84,7 +84,7 @@ import UniformTypeIdentifiers
 
         let store = DocumentStore()
         await store.openFolder(folder)
-        store.saveImmediately()
+        store.saveDocument()
 
         let saved = try #require(try StateStore.load(from: folder))
         #expect(saved.version == ProjectState.currentVersion)
@@ -104,7 +104,7 @@ import UniformTypeIdentifiers
         // the corners are what gets mapped onto the shape, so they win, and
         // the page comes back upright rather than drifting out of true.
         store.toggleCropOrientation(forPageID: id)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

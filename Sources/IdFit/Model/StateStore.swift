@@ -7,12 +7,33 @@ import Foundation
 /// only makes it easy to lose. The contents are JSON.
 enum StateStore {
     static let fileExtension = "idfit"
-    static let fileName = "Document.idfit"
+    /// What every document used to be called, before they took the folder's
+    /// name. Folders written by those versions keep it.
+    static let legacyDocumentName = "Document.idfit"
     /// Earlier versions kept a hidden dotfile.
     static let legacyFileName = ".id-fit.json"
 
+    /// Where a new document goes. Named after its folder: several of them open
+    /// at once, or sitting in a search result, are otherwise all "Document".
     static func stateFileURL(for folder: URL) -> URL {
-        folder.appendingPathComponent(fileName, isDirectory: false)
+        folder.appendingPathComponent(documentName(for: folder), isDirectory: false)
+    }
+
+    static func documentName(for folder: URL) -> String {
+        // "/" cannot occur in a path component and ":" is what Finder shows as
+        // one, so a folder named with either would make a file that reads as
+        // something else entirely.
+        let cleaned = folder.standardizedFileURL.lastPathComponent
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // A volume root has no name worth taking, and a name that is nothing
+        // but dots would make the document hidden — the one thing it must not
+        // be.
+        let usable = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: ".")).isEmpty
+            ? "Document"
+            : cleaned
+        return "\(usable).\(fileExtension)"
     }
 
     /// The document to read: the usual name, else any `.idfit` in the folder

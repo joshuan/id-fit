@@ -133,7 +133,7 @@ import UniformTypeIdentifiers
         }
 
         // 6. Close the app; everything is on disk.
-        store.saveImmediately()
+        store.saveDocument()
         #expect(!store.hasUnsavedChanges)
 
         // 7. The folder syncs to another computer and is opened there. The
@@ -163,7 +163,7 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         store.setAspectRatio(AspectRatio(width: 85.6, height: 54))
-        store.saveImmediately()
+        store.saveDocument()
 
         let contents = try String(contentsOf: StateStore.stateFileURL(for: folder), encoding: .utf8)
         #expect(!contents.contains("/"))
@@ -180,7 +180,7 @@ import UniformTypeIdentifiers
         store.setAspectRatio(AspectRatio(width: 210, height: 297))
         store.movePage(id: store.state.pages[4].id, toIndex: 0)
         let order = store.state.pages.map(\.source)
-        store.saveImmediately()
+        store.saveDocument()
 
         // The user goes back to the scanner for one more page.
         writePNG(size: CGSize(width: 800, height: 1200), to: folder.appendingPathComponent("aaa-late.png"))

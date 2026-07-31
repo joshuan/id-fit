@@ -91,6 +91,9 @@ final class DocumentStore {
     @ObservationIgnored private var openTask: Task<Void, Never>?
 
     private func performOpen(_ url: URL) async {
+        // Work that was never saved would go with the folder being left, so
+        // ask before leaving it.
+        guard confirmDiscardingChanges() else { return }
         saveImmediately()
         isLoading = true
         defer { isLoading = false }
@@ -109,7 +112,11 @@ final class DocumentStore {
             folderURL = url
             state = reconciled
             missingSources = reconciled.missingSources(given: discovered)
-            hasUnsavedChanges = false
+            hasDocument = StateStore.existingStateFile(in: url) != nil
+            // A folder opened for the first time holds pages, an aspect ratio
+            // and soon a set of detected crops, none of which is on disk yet —
+            // which is exactly what "unsaved" means.
+            hasUnsavedChanges = !hasDocument
             rememberFolder(url)
             sourceSizes = await Task.detached(priority: .userInitiated) {
                 var sizes: [SourceRef: CGSize] = [:]
@@ -128,10 +135,12 @@ final class DocumentStore {
             state.version = ProjectState.currentVersion
             alignOrientationsWithCorners()
             normalizeCropsToSharedRatio()
-            // A folder still kept by the old hidden dotfile is written out as
-            // a visible document even when nothing else changed, or it would
+            // Opening a folder writes nothing into it. Only a folder that
+            // already has a document gets kept up to date — including one
+            // still kept by the old hidden dotfile, which is written out as a
+            // visible document even when nothing else changed, or it would
             // keep its dotfile forever for want of an unrelated edit.
-            if state != loaded || StateStore.usesLegacyDocument(in: url) {
+            if hasDocument, state != loaded || StateStore.usesLegacyDocument(in: url) {
                 try StateStore.save(state, to: url)
             }
 
@@ -710,7 +719,11 @@ final class DocumentStore {
         guard !state.exportedFiles.contains(name) else { return }
         state.exportedFiles.append(name)
         hasUnsavedChanges = true
-        saveImmediately()
+        // Written even when the folder had no document yet. Opening a folder
+        // leaves it untouched, but this action has just put a file in it, and
+        // a record of that file is the only thing keeping the next open from
+        // reading the export back in as a stack of pages.
+        saveDocument()
     }
 
     func clearLastExport() {
@@ -830,7 +843,10 @@ final class DocumentStore {
             SourceGeometry.shared.invalidate()
             await reloadSourceSizes()
             hasUnsavedChanges = true
-            saveImmediately()
+            // Also written without being asked: the source files now carry
+            // their crops, and a folder that does not record that would offer
+            // to crop them a second time.
+            saveDocument()
 
             if !result.failures.isEmpty {
                 lastError = "Some files could not be updated: \(result.failures.joined(separator: ", "))"
@@ -867,9 +883,62 @@ final class DocumentStore {
 
     // MARK: - Saving
 
+    /// Whether the open folder holds a document. Until it does, nothing about
+    /// the work is on disk and every save path stays its hand.
+    private(set) var hasDocument = false
+
+    var canSave: Bool { folderURL != nil && hasUnsavedChanges }
+
+    /// The name a save would give the document, for asking about it.
+    private var documentName: String {
+        folderURL.map { StateStore.existingStateFile(in: $0)?.lastPathComponent
+            ?? StateStore.documentName(for: $0) } ?? ""
+    }
+
+    /// Asked before work that was never written out is discarded. Left unset
+    /// outside the running app: a test, or anything else without a screen,
+    /// carries on rather than blocking on a modal nobody can answer.
+    @ObservationIgnored
+    var confirmDiscard: ((_ documentName: String, _ folderName: String) -> UnsavedChangesPrompt.Answer)?
+
+    /// Writes the document, creating it the first time. From then on edits
+    /// keep it up to date on their own — the folder has said it wants to be
+    /// remembered, and re-asking on every crop would be noise.
+    func saveDocument() {
+        guard let folderURL else { return }
+        saveTask?.cancel()
+        saveTask = nil
+        do {
+            try StateStore.save(state, to: folderURL)
+            hasDocument = true
+            hasUnsavedChanges = false
+        } catch {
+            lastError = "Could not save the document: \(error.localizedDescription)"
+        }
+    }
+
+    /// Asks before work that was never written out is thrown away. Answers
+    /// true when it is safe to carry on.
+    func confirmDiscardingChanges() -> Bool {
+        guard hasUnsavedChanges, !hasDocument, folderURL != nil,
+              let confirmDiscard else { return true }
+        switch confirmDiscard(documentName, folderName) {
+        case .save:
+            saveDocument()
+            return lastError == nil
+        case .discard:
+            return true
+        case .cancel:
+            return false
+        }
+    }
+
     /// Coalesces bursts of edits (e.g. a flurry of drags) into one write.
     private func scheduleSave() {
         hasUnsavedChanges = true
+        // No document, nothing to keep up to date: the folder is untouched
+        // until somebody asks for it to be saved.
+        guard hasDocument else { return }
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(400))
@@ -879,7 +948,7 @@ final class DocumentStore {
     }
 
     private func performSave() async {
-        guard let folderURL else { return }
+        guard hasDocument, let folderURL else { return }
         let snapshot = state
         do {
             try await Task.detached(priority: .utility) {
@@ -896,7 +965,7 @@ final class DocumentStore {
     func saveImmediately() {
         saveTask?.cancel()
         saveTask = nil
-        guard hasUnsavedChanges, let folderURL else { return }
+        guard hasUnsavedChanges, hasDocument, let folderURL else { return }
         do {
             try StateStore.save(state, to: folderURL)
             hasUnsavedChanges = false

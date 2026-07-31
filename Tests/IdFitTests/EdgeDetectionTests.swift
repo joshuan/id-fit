@@ -168,7 +168,7 @@ import UniformTypeIdentifiers
         #expect(store.state.pages[0].crop != nil)
 
         // But the automatic pass on reopening leaves it alone.
-        store.saveImmediately()
+        store.saveDocument()
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
         let after = try #require(reopened.state.pages[0].crop)
@@ -189,7 +189,7 @@ import UniformTypeIdentifiers
 
         // The user decides they want the whole scan after all.
         store.setAspectRatio(nil)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
@@ -210,7 +210,7 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         await store.redetectEdgesOnAllPages()
-        store.saveImmediately()
+        store.saveDocument()
 
         writePNG(Self.scanImage(document: CGRect(x: 0.3, y: 0.25, width: 0.4, height: 0.5)),
                  to: folder.appendingPathComponent("b.png"))

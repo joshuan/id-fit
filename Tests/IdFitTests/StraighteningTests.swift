@@ -229,7 +229,7 @@ import UniformTypeIdentifiers
         #expect(store.state.pages[0].quad != nil)
 
         // And it survives a reopen.
-        store.saveImmediately()
+        store.saveDocument()
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
         #expect(reopened.state.pages[0].quad != nil)

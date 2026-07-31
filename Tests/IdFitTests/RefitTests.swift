@@ -146,7 +146,7 @@ import UniformTypeIdentifiers
             outputRatio: a4, sourceSize: size
         )
         store.setCrop(mine, forPageID: page.id)
-        store.saveImmediately()
+        store.saveDocument()
 
         // Reopening runs the crops through normalization again.
         let reopened = DocumentStore()

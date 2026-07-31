@@ -45,7 +45,7 @@ import Testing
 
         try StateStore.save(ProjectState(), to: folder)
         let url = StateStore.stateFileURL(for: folder)
-        #expect(url.lastPathComponent == "Document.idfit")
+        #expect(url.lastPathComponent == folder.lastPathComponent + ".idfit")
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
 }

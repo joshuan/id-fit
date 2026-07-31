@@ -181,7 +181,7 @@ import UniformTypeIdentifiers
         store.rotatePage(id: id, by: -90)
         #expect(store.state.pages[0].rotation == 270)
 
-        store.saveImmediately()
+        store.saveDocument()
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
         #expect(reopened.state.pages[0].rotation == 270)
@@ -206,7 +206,7 @@ import UniformTypeIdentifiers
 
         let store = DocumentStore()
         await store.openFolder(folder)
-        store.saveImmediately()
+        store.saveDocument()
 
         try FileManager.default.removeItem(at: folder.appendingPathComponent("a.jpg"))
         let reopened = DocumentStore()
@@ -240,7 +240,7 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         store.removePage(id: store.state.pages[0].id)
-        store.saveImmediately()
+        store.saveDocument()
 
         // Reconciliation re-adds it, because the folder is the source of truth.
         let reopened = DocumentStore()

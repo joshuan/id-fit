@@ -82,7 +82,7 @@ import UniformTypeIdentifiers
         store.movePage(id: copy.id, toIndex: 3)
 
         #expect(store.state.pages.map(\.source.file) == ["cover.png", "p1.png", "p2.png", "cover.png"])
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

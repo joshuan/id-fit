@@ -72,7 +72,7 @@ import UniformTypeIdentifiers
         let store = DocumentStore()
         await store.openFolder(folder)
         store.rotatePages(ids: store.state.pages.map(\.id), by: -90)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

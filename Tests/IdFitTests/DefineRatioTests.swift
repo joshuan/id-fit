@@ -96,7 +96,7 @@ import UniformTypeIdentifiers
         let drawn = CropRect(x: 0.1, y: 0.1, width: 0.6, height: 0.3)
         store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: store.state.pages[0].id)
         let expected = try #require(store.state.cropAspectRatio)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

@@ -27,7 +27,9 @@ import Testing
         try StateStore.save(ProjectState(pages: [Page(source: SourceRef(file: "a.jpg"))]), to: folder)
 
         let url = StateStore.stateFileURL(for: folder)
-        #expect(url.lastPathComponent == "Document.idfit")
+        // Named after its folder, so a search result full of them is
+        // tellable apart.
+        #expect(url.lastPathComponent == folder.lastPathComponent + ".idfit")
         #expect(!url.lastPathComponent.hasPrefix("."))
         #expect(url.pathExtension == "idfit")
 
@@ -56,7 +58,7 @@ import Testing
         // …and once written back, the visible document replaces the dotfile
         // rather than sitting beside it as a second, stale copy.
         try StateStore.save(loaded, to: folder)
-        #expect(try names(in: folder) == ["Document.idfit"])
+        #expect(try names(in: folder) == [folder.lastPathComponent + ".idfit"])
     }
 
     @Test func aRenamedDocumentIsStillFoundAndWrittenTo() throws {
@@ -85,7 +87,7 @@ import Testing
 
         let store = DocumentStore()
         await store.openFolder(folder)
-        store.saveImmediately()
+        store.saveDocument()
 
         // Now that it is a visible file, the scanner has to keep ignoring it.
         let reopened = DocumentStore()
@@ -115,7 +117,7 @@ import Testing
         // must not be kept forever for want of an unrelated edit.
         let store = DocumentStore()
         await store.openFolder(folder)
-        store.saveImmediately()
+        store.saveDocument()
         let settled = try #require(try StateStore.load(from: folder))
 
         let legacy = folder.appendingPathComponent(StateStore.legacyFileName)
@@ -127,7 +129,7 @@ import Testing
         await reopened.openFolder(folder)
 
         #expect(!StateStore.usesLegacyDocument(in: folder))
-        #expect(try names(in: folder) == ["Document.idfit", "a.jpg"])
+        #expect(try names(in: folder) == [folder.lastPathComponent + ".idfit", "a.jpg"].sorted())
     }
 
     @Test func anEmptyFolderHasNoDocumentYet() throws {

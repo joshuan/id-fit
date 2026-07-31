@@ -138,7 +138,7 @@ import UniformTypeIdentifiers
         await store.openFolder(folder)
         store.setAspectRatio(AspectRatio(width: 210, height: 297))
         let saved = store.state.pages.map(\.crop)
-        store.saveImmediately()
+        store.saveDocument()
 
         let reopened = DocumentStore()
         await reopened.openFolder(folder)

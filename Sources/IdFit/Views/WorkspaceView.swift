@@ -100,6 +100,15 @@ struct WorkspaceView: View {
             AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
         }
         ToolbarItem {
+            Button("Save", systemImage: "square.and.arrow.down") {
+                store.saveDocument()
+            }
+            .disabled(!store.canSave)
+            .help(store.hasDocument
+                ? "Save changes to the document"
+                : "Write this folder's pages and crops to a document")
+        }
+        ToolbarItem {
             Button("Export…", systemImage: "square.and.arrow.up") {
                 store.isPresentingExport = true
             }
