@@ -1,16 +1,20 @@
 name: Release
 
-# Tag a commit to cut a release:
+# Runs when a release is published on GitHub — from the Releases page or from
+# `gh release create`. The release already exists by then, so this builds its
+# tag and attaches the build to it.
 #
-#   git tag v1.2.3 && git push origin v1.2.3
+# Publishing is the only trigger. Pushing a tag on its own releases nothing,
+# which also keeps a tag created by the Releases page from starting this
+# workflow twice.
 #
-# Without signing secrets the workflow publishes an ad-hoc signed build, which
-# is installable through install.sh (see the release notes it writes). Add the
-# secrets listed under "Sign with Developer ID" and the same workflow starts
-# producing a notarized build instead — nothing else changes.
+# Without signing secrets the build is ad-hoc signed, which is installable
+# through install.sh (see the notes this workflow appends). Add the secrets
+# listed under "Sign with Developer ID" and the same workflow starts producing
+# a notarized build instead — nothing else changes.
 on:
-  push:
-    tags: ["v*"]
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -22,6 +26,8 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -66,12 +72,14 @@ jobs:
 
       - name: Package
         env:
+          TAG: ${{ github.event.release.tag_name }}
           SIGN_IDENTITY: ${{ steps.signing.outputs.available == 'true' && secrets.MACOS_SIGN_IDENTITY || '-' }}
           # A secure timestamp needs a real identity, so ad-hoc builds omit it.
           CODESIGN_FLAGS: ${{ steps.signing.outputs.available == 'true' && '--options runtime --timestamp' || '--options runtime' }}
         run: |
+          # The tag is the version: v1.2.3 ships as 1.2.3.
           make package \
-            VERSION="${GITHUB_REF_NAME#v}" \
+            VERSION="${TAG#v}" \
             BUILD="${{ github.run_number }}" \
             SIGN_IDENTITY="$SIGN_IDENTITY" \
             CODESIGN_FLAGS="$CODESIGN_FLAGS"
@@ -97,13 +105,26 @@ jobs:
           ditto -c -k --keepParent dist/IdFit.app dist/IdFit.zip
           xcrun stapler validate dist/IdFit.app
 
-      - name: Publish
+      - name: Attach the build to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
           NOTARIZED: ${{ steps.signing.outputs.available }}
         run: |
+          # --clobber so re-running the workflow replaces the asset instead of
+          # failing on the one already there.
+          gh release upload "$TAG" dist/IdFit.zip --clobber
+
+          # The notes are the author's; this only adds the section telling
+          # people how to install what was just attached.
           notes="$RUNNER_TEMP/notes.md"
+          gh release view "$TAG" --json body --jq '.body // ""' > "$notes"
+          if grep -q '^## Install' "$notes"; then
+            echo "The notes already carry install instructions — leaving them as they are."
+            exit 0
+          fi
           {
+            echo
             echo "## Install"
             echo
             echo '```sh'
@@ -117,7 +138,5 @@ jobs:
             fi
             echo
             echo "Requires macOS 15 or later."
-          } > "$notes"
-          gh release create "$GITHUB_REF_NAME" dist/IdFit.zip \
-            --title "ID Fit ${GITHUB_REF_NAME#v}" \
-            --notes-file "$notes"
+          } >> "$notes"
+          gh release edit "$TAG" --notes-file "$notes"

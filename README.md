@@ -53,10 +53,30 @@ make test      # run the unit tests
 make package   # Release build, ad-hoc signed, into dist/
 ```
 
-Tests run on every push and pull request. Pushing a `v*` tag builds a release, packages it and publishes it to GitHub Releases:
+Tests run on every push and pull request.
+
+## Releasing
+
+Releases are made from GitHub, without touching a tag by hand:
+
+1. Open **Releases → Draft a new release**.
+2. Under **Choose a tag**, type the new version — `v1.2.3` — and pick *Create new tag on publish*.
+3. Write down what changed and press **Publish release**.
+
+Publishing starts the release workflow. It checks out that tag, runs the tests, builds and signs the app, attaches `IdFit.zip` to the release and appends install instructions to the notes you wrote. The whole thing takes a few minutes, during which the release is already visible but has nothing to download — so let it finish before pointing anyone at the page.
+
+The tag is the only place a version number lives: `v1.2.3` ships as version 1.2.3, and nothing in the repository needs editing to bump it. The build number is the workflow run number.
+
+Publishing is what releases, not tagging. A tag pushed on its own does nothing until a release is published from it, so a mistyped tag is harmless.
+
+The same release can be published from the command line, which does everything the three steps above do — creates the tag, publishes the release, starts the workflow:
 
 ```sh
-git tag v1.2.3 && git push origin v1.2.3
+gh release create v1.2.3 --generate-notes
 ```
 
-The tag becomes the bundle's version. The release workflow signs with a Developer ID and notarizes when the repository has the secrets for it, and falls back to ad-hoc signing when it doesn't — see the comments in `.github/workflows/release.yml`.
+`--generate-notes` writes the notes — and the title — from the commits and pull requests since the previous release; replace it with `--notes "…"` to write your own, or drop both flags to be prompted for them. The new tag is created from the latest state of the default branch on GitHub, not from whatever is checked out locally; `--target <branch-or-sha>` points it somewhere else.
+
+Re-running the workflow on an already published release is safe: the asset is replaced rather than duplicated, and notes that already carry install instructions are left alone.
+
+The workflow signs with a Developer ID and notarizes when the repository has the secrets for it, and falls back to ad-hoc signing when it doesn't — see the comments in `.github/workflows/release.yml` for the secrets it looks for.
