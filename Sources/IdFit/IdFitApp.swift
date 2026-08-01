@@ -4,41 +4,122 @@ import UserNotifications
 
 @main
 struct IdFitApp: App {
-    @State private var store = DocumentStore()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup {
-            ContentView(store: store)
-                .onAppear { appDelegate.attach(store: store) }
+        // One window, one folder. The value a window is opened with is the
+        // folder to show in it; ⌘N opens one with nothing in it yet.
+        WindowGroup(for: URL.self) { $folder in
+            DocumentWindow(folder: folder)
         }
-        .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates…") {
-                    Task { await store.checkForUpdates() }
+        .commands { DocumentCommands() }
+    }
+}
+
+/// A window and the document it holds. Each one owns its own store, so two
+/// windows are two folders rather than two views of one.
+struct DocumentWindow: View {
+    let folder: URL?
+
+    @State private var store = DocumentStore()
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        ContentView(store: store)
+            // What the File menu acts on: whichever window is in front.
+            // Scene-scoped rather than view-scoped — `focusedValue` waits for
+            // something inside the view to take keyboard focus, and a window
+            // showing a grid of pages may never have any.
+            .focusedSceneValue(\.documentStore, store)
+            // Finder's "Open With" and `open -b …` arrive here. Left to the
+            // app delegate instead, macOS opens a window for the request and
+            // SwiftUI opens another one beside it.
+            .onOpenURL { url in
+                Task { await store.openFolderOrParent(of: url) }
+            }
+            .task {
+                let documents = OpenDocuments.shared
+                documents.register(store)
+                // Lending the app a way to make windows. Any window can do it
+                // and the action keeps working once this one has gone.
+                documents.openWindow = { url in openWindow(value: url) }
+                store.confirmDiscard = { documentName, folderName, canCancel in
+                    UnsavedChangesPrompt.ask(
+                        documentName: documentName, folderName: folderName, canCancel: canCancel
+                    )
                 }
-                Button("Install Command Line Tool…") { installCommandLineTool() }
-            }
-            CommandGroup(replacing: .newItem) {
-                Button("Open Folder…") { store.isPickingFolder = true }
-                    .keyboardShortcut("o", modifiers: .command)
-            }
-            CommandGroup(replacing: .saveItem) {
-                Button("Save") { store.saveDocument() }
-                    .keyboardShortcut("s", modifiers: .command)
-                    .disabled(!store.canSave)
-            }
-            CommandGroup(replacing: .importExport) {
-                Button("Export…") {
-                    store.isPresentingExport = true
+                if let folder {
+                    await store.openFolderOrParent(of: folder)
+                } else if let waiting = (NSApp.delegate as? AppDelegate)?.takePendingFolder() {
+                    // Handed over before there was any window to put it in —
+                    // from the command line at launch, or by the Services
+                    // menu while the app had none open.
+                    await store.openFolderOrParent(of: waiting)
                 }
+            }
+            .onDisappear {
+                // The window is already going, so there is nothing to cancel
+                // — but work that was never written out would go with it, and
+                // that is worth one question.
+                _ = store.confirmDiscardingChanges(allowCancel: false)
+                store.saveImmediately()
+            }
+    }
+}
+
+/// The store the frontmost window is showing, which is what a menu command
+/// means when it says "this document".
+struct FocusedDocumentKey: FocusedValueKey {
+    typealias Value = DocumentStore
+}
+
+extension FocusedValues {
+    var documentStore: DocumentStore? {
+        get { self[FocusedDocumentKey.self] }
+        set { self[FocusedDocumentKey.self] = newValue }
+    }
+}
+
+struct DocumentCommands: Commands {
+    @FocusedValue(\.documentStore) private var store
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                Task { await UpdateController.shared.checkNow() }
+            }
+            Button("Install Command Line Tool…") { installCommandLineTool() }
+                .disabled(store == nil)
+        }
+        // Left alone: SwiftUI's own "New Window" belongs here, and so does the
+        // window's Close.
+        CommandGroup(after: .newItem) {
+            Button("Open Folder…") { store?.isPickingFolder = true }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(store == nil)
+            // SwiftUI leaves the File menu without a Close of its own, and a
+            // window that cannot be closed from the menu is not a window.
+            // Sent down the responder chain rather than to `NSApp.keyWindow`,
+            // which is nil whenever the app is not the active one.
+            Button("Close") {
+                NSApp.sendAction(#selector(NSWindow.performClose(_:)), to: nil, from: nil)
+            }
+            .keyboardShortcut("w", modifiers: .command)
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") { store?.saveDocument() }
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(store?.canSave != true)
+        }
+        CommandGroup(replacing: .importExport) {
+            Button("Export…") { store?.isPresentingExport = true }
                 .keyboardShortcut("e", modifiers: .command)
-                .disabled(store.folderURL == nil || store.state.pages.isEmpty || store.isExporting)
-            }
+                .disabled(store == nil || store?.state.pages.isEmpty != false || store?.isExporting == true)
         }
     }
 
     private func installCommandLineTool() {
+        guard let store else { return }
         switch CommandLineInstaller.run() {
         case .cancelled:
             break
@@ -52,9 +133,7 @@ struct IdFitApp: App {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var store: DocumentStore?
-    /// A folder can be handed to the app before the window exists — when the
-    /// app is launched by the command line tool, for instance.
+    /// A folder can arrive before there is any window to put it in.
     private var pendingURL: URL?
 
     private let serviceProvider = ServiceProvider()
@@ -68,49 +147,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         UNUserNotificationCenter.current().delegate = self
         UpdateNotifier.registerCategory()
-    }
-
-    func attach(store: DocumentStore) {
-        guard self.store !== store else { return }
-        self.store = store
-        // The store keeps the question; the app supplies the screen to ask it
-        // on. Without this it never asks, which is what tests want.
-        store.confirmDiscard = { documentName, folderName in
-            UnsavedChangesPrompt.ask(documentName: documentName, folderName: folderName)
+        UpdateController.shared.confirmRestart = {
+            let documents = OpenDocuments.shared
+            guard documents.confirmClosingAll() else { return false }
+            documents.saveAll()
+            return true
         }
-        if let pendingURL {
-            self.pendingURL = nil
-            open(pendingURL)
+
+        // Dev convenience: `open IdFit.app --args /path/to/folder`. Handled
+        // once here rather than in a window, which would take it again every
+        // time a new one was opened.
+        if let path = CommandLine.arguments.dropFirst().first,
+           FileManager.default.fileExists(atPath: path) {
+            pendingURL = URL(fileURLWithPath: path)
         }
+
+        Task { await UpdateController.shared.checkIfDue() }
     }
 
-    /// Finder's "Open With", `open -b …` from the command line tool, and drops
-    /// on the app icon all arrive here.
-    func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        open(url)
-    }
-
+    /// Closing the last window leaves the app running, as a document app
+    /// should: the folders opened before are one ⌘N away.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
-    /// Quitting a folder that was never saved would take the work with it.
+    /// Quitting with a folder that was never saved would take the work with
+    /// it, so every window gets asked.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let store else { return .terminateNow }
-        return store.confirmDiscardingChanges() ? .terminateNow : .terminateCancel
+        OpenDocuments.shared.confirmClosingAll() ? .terminateNow : .terminateCancel
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        store?.saveImmediately()
+        OpenDocuments.shared.saveAll()
     }
 
+    /// The Services menu, and the folder named on the command line at launch.
+    /// Finder's own "Open With" does not come through here — SwiftUI takes
+    /// that one straight to a window.
+    ///
+    /// A folder gets a window of its own, the way opening a document does,
+    /// unless it is already open in one.
     private func open(_ url: URL) {
-        guard let store else {
+        let documents = OpenDocuments.shared
+        if documents.window(showing: url) != nil {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let openWindow = documents.openWindow else {
             pendingURL = url
             return
         }
-        Task { await store.openFolderOrParent(of: url) }
+        openWindow(url)
+    }
+
+    /// Handed to the first window to appear, for whatever arrived before there
+    /// was one.
+    func takePendingFolder() -> URL? {
+        defer { pendingURL = nil }
+        return pendingURL
     }
 }
 
@@ -129,10 +223,20 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         _ center: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse
     ) async {
-        // Read here rather than on the main actor: the response cannot cross,
-        // but the URL it carries can.
-        guard let page = UpdateNotifier.page(for: response) else { return }
-        await MainActor.run { NSWorkspace.shared.open(page) }
+        // Read here rather than on the main actor: the response itself cannot
+        // cross, but what it asks for can.
+        guard let action = UpdateNotifier.action(for: response) else { return }
+        await MainActor.run { self.handle(action) }
+    }
+
+    private func handle(_ action: UpdateNotifier.Action) {
+        switch action {
+        case .install:
+            Task { await UpdateController.shared.installLatest() }
+        case .show:
+            NSApp.activate(ignoringOtherApps: true)
+            Task { await UpdateController.shared.showLatest() }
+        }
     }
 }
 

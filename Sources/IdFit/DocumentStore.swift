@@ -51,18 +51,6 @@ final class DocumentStore {
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
-    /// Reopens whatever was open last time, so launching the app lands
-    /// straight back in the document being worked on.
-    func restoreLastSession() async {
-        guard folderURL == nil,
-              let path = UserDefaults.standard.string(forKey: Self.lastFolderKey)
-        else { return }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
-              isDirectory.boolValue else { return }
-        await openFolder(URL(fileURLWithPath: path, isDirectory: true))
-    }
-
     /// Opens whatever the URL points at: a folder directly, a file by way of
     /// the folder holding it. Used by the command line tool, the Services menu
     /// and Finder's "Open With".
@@ -746,67 +734,6 @@ final class DocumentStore {
         commandLineNotice = nil
     }
 
-    // MARK: - Updates
-
-    private static let lastUpdateCheckKey = "lastUpdateCheck"
-
-    /// Set only when the news has to be delivered in the window: either the
-    /// check was asked for, or Notification Center refused to carry it.
-    private(set) var availableUpdate: UpdateChecker.Release?
-    /// Only ever set for a check somebody asked for: "you are up to date" is
-    /// an answer to a question, not an interruption.
-    private(set) var updateNotice: String?
-
-    /// The look on launch. Silent unless there is something to say, and at
-    /// most once a day — which is also what "Later" on the notification comes
-    /// to: nothing is recorded, so the next launch a day or more on asks
-    /// again.
-    func checkForUpdatesIfDue() async {
-        let last = UserDefaults.standard.object(forKey: Self.lastUpdateCheckKey) as? Date
-        guard UpdateSchedule.isDue(lastCheck: last, now: Date()) else { return }
-        await runUpdateCheck(userInitiated: false)
-    }
-
-    func checkForUpdates() async {
-        await runUpdateCheck(userInitiated: true)
-    }
-
-    private func runUpdateCheck(userInitiated: Bool) async {
-        let current = UpdateChecker.runningVersion
-        do {
-            let outcome = try await UpdateChecker.check(currentVersion: current)
-            UserDefaults.standard.set(Date(), forKey: Self.lastUpdateCheckKey)
-            switch outcome {
-            case .upToDate:
-                if userInitiated {
-                    updateNotice = "ID Fit \(current) is the latest version."
-                }
-            case .available(let release):
-                if userInitiated {
-                    // A question asked out loud gets its answer on the spot,
-                    // not a banner that may be turned off entirely.
-                    availableUpdate = release
-                } else if await UpdateNotifier.post(release: release, currentVersion: current) == false {
-                    availableUpdate = release
-                }
-            }
-        } catch {
-            // A check nobody asked for stays quiet when it fails. Being
-            // offline is not news, and the app works offline anyway.
-            if userInitiated {
-                updateNotice = "Could not check for updates: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    func dismissUpdate() {
-        availableUpdate = nil
-    }
-
-    func clearUpdateNotice() {
-        updateNotice = nil
-    }
-
     func report(error message: String) {
         lastError = message
     }
@@ -899,7 +826,9 @@ final class DocumentStore {
     /// outside the running app: a test, or anything else without a screen,
     /// carries on rather than blocking on a modal nobody can answer.
     @ObservationIgnored
-    var confirmDiscard: ((_ documentName: String, _ folderName: String) -> UnsavedChangesPrompt.Answer)?
+    var confirmDiscard: (
+        (_ documentName: String, _ folderName: String, _ canCancel: Bool) -> UnsavedChangesPrompt.Answer
+    )?
 
     /// Writes the document, creating it the first time. From then on edits
     /// keep it up to date on their own — the folder has said it wants to be
@@ -919,10 +848,10 @@ final class DocumentStore {
 
     /// Asks before work that was never written out is thrown away. Answers
     /// true when it is safe to carry on.
-    func confirmDiscardingChanges() -> Bool {
+    func confirmDiscardingChanges(allowCancel: Bool = true) -> Bool {
         guard hasUnsavedChanges, !hasDocument, folderURL != nil,
               let confirmDiscard else { return true }
-        switch confirmDiscard(documentName, folderName) {
+        switch confirmDiscard(documentName, folderName, allowCancel) {
         case .save:
             saveDocument()
             return lastError == nil

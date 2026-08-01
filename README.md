@@ -23,6 +23,8 @@ Two explicit, separate actions can touch files:
 
 ## Opening a folder
 
+Each folder gets a window of its own, and ⌘N opens another one. Starting the app opens nothing: it lands on the welcome screen, with the folders you worked on before listed there. Closing the last window leaves the app running, the way a Mac app should.
+
 Besides **File → Open Folder…** and dropping a folder on the window:
 
 - **From Finder** — right-click a folder and choose *Open With → ID Fit*, or *Services → Open Folder in ID Fit*.
@@ -40,7 +42,9 @@ curl -fsSL https://raw.githubusercontent.com/joshuan/id-fit/main/install.sh | sh
 
 This downloads the latest [release](https://github.com/joshuan/id-fit/releases), puts `IdFit.app` in `/Applications` and tells Finder about it, so *Open With* and the *Services* entry work right away. Pin a version with `IDFIT_VERSION=v1.2.3` in front of the command.
 
-Once installed, ID Fit looks for a newer release by itself — quietly, at most once a day, and it says nothing unless there is one. When there is, it arrives as a notification offering **Download** or **Later**. Ignoring it is a complete answer: nothing is recorded, so the next launch a day or more later brings it up again. **ID Fit → Check for Updates…** asks on the spot instead, and always answers. Neither one installs anything — both point at the release page, where the download and the command above are waiting.
+Once installed, ID Fit keeps itself up to date. It looks for a newer release by itself — quietly, at most once a day, and says nothing unless there is one. When there is, a notification offers **Install** or **Later**; ignoring it is a complete answer, and the next launch a day or more later brings it up again. **ID Fit → Check for Updates…** asks on the spot instead, and always answers.
+
+Installing downloads the release, checks that it really is ID Fit at the version it claims and that its signature is intact, then replaces this copy and restarts it. Anything that does not add up stops the whole thing before a single file is touched, and the alert also offers the release page as a way round. Updating from inside the app has one quiet advantage over downloading it again in a browser: nothing is marked as a download, so macOS asks no questions.
 
 You can also download `IdFit.zip` from the releases page and drag the app into `/Applications` yourself. One extra step comes with it: builds are signed ad-hoc rather than notarized by Apple, and macOS refuses to open an app it got from a browser under those terms. Open **System Settings → Privacy & Security**, find the message about ID Fit and press **Open Anyway** — once per version. The script above is not a workaround for a security check so much as a different delivery route: macOS only applies that check to files a browser marked as downloaded.
 

@@ -14,7 +14,10 @@ enum UnsavedChangesPrompt {
         case cancel
     }
 
-    static func ask(documentName: String, folderName: String) -> Answer {
+    /// - Parameter canCancel: false once whatever prompted the question can no
+    ///   longer be called off — a window that has already closed, say. Offering
+    ///   "Cancel" there would promise something that cannot be delivered.
+    static func ask(documentName: String, folderName: String, canCancel: Bool = true) -> Answer {
         let alert = NSAlert()
         alert.messageText = "Save the changes to “\(folderName)”?"
         alert.informativeText = """
@@ -24,7 +27,9 @@ enum UnsavedChangesPrompt {
             """
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don’t Save")
-        alert.addButton(withTitle: "Cancel")
+        if canCancel {
+            alert.addButton(withTitle: "Cancel")
+        }
 
         switch alert.runModal() {
         case .alertFirstButtonReturn: return .save

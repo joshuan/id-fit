@@ -10,16 +10,24 @@ import UserNotifications
 /// the next launch a day or more later asks again.
 enum UpdateNotifier {
     static let category = "update"
-    static let downloadAction = "download"
+    static let installAction = "install"
     static let laterAction = "later"
     /// Carries the release page through to whichever button gets pressed.
     static let pageKey = "page"
+
+    enum Action {
+        /// Fetch it and restart into it.
+        case install
+        /// Bring the question back into the window, where it can be read
+        /// before anything is replaced.
+        case show
+    }
 
     /// Registered once at launch: the buttons belong to the category, not to
     /// the individual notification.
     static func registerCategory() {
         let download = UNNotificationAction(
-            identifier: downloadAction, title: "Download", options: [.foreground]
+            identifier: installAction, title: "Install", options: [.foreground]
         )
         let later = UNNotificationAction(identifier: laterAction, title: "Later", options: [])
         UNUserNotificationCenter.current().setNotificationCategories([
@@ -42,7 +50,7 @@ enum UpdateNotifier {
 
         let content = UNMutableNotificationContent()
         content.title = "ID Fit \(release.version) is available"
-        content.body = "You have \(currentVersion). Download it now, or leave this for next time."
+        content.body = "You have \(currentVersion). Install it now, or leave this for next time."
         content.categoryIdentifier = category
         content.userInfo = [pageKey: release.page.absoluteString]
 
@@ -72,14 +80,14 @@ enum UpdateNotifier {
         }
     }
 
-    /// The page a pressed notification points at, if it is one of ours and the
-    /// button pressed was not "Later".
-    static func page(for response: UNNotificationResponse) -> URL? {
-        guard response.actionIdentifier == downloadAction
-            || response.actionIdentifier == UNNotificationDefaultActionIdentifier
-        else { return nil }
-        guard let string = response.notification.request.content.userInfo[pageKey] as? String
-        else { return nil }
-        return URL(string: string)
+    /// What a pressed notification asks for. Tapping the banner itself only
+    /// brings the question up in the window: replacing the app is something to
+    /// be asked for on purpose, not by brushing past a notification.
+    static func action(for response: UNNotificationResponse) -> Action? {
+        switch response.actionIdentifier {
+        case installAction: .install
+        case UNNotificationDefaultActionIdentifier: .show
+        default: nil
+        }
     }
 }
