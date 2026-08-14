@@ -85,18 +85,27 @@ import UniformTypeIdentifiers
         }
     }
 
-    @Test func choosingOriginalClearsAllCrops() async throws {
+    /// Going mixed gives up the one shape, not the work: the crops stay
+    /// exactly where they are and are simply free to be changed one by one.
+    @Test func choosingMixedKeepsTheCropsItStopsConstraining() async throws {
         let folder = try makeFolder(mixedSizes)
         defer { try? FileManager.default.removeItem(at: folder) }
 
         let store = DocumentStore()
         await store.openFolder(folder)
         store.setAspectRatio(AspectRatio(width: 1, height: 1))
-        #expect(store.state.pages.allSatisfy { $0.crop != nil })
+        let framed = store.state.pages.map(\.crop)
+        #expect(framed.allSatisfy { $0 != nil })
 
         store.setAspectRatio(nil)
-        #expect(store.state.pages.allSatisfy { $0.crop == nil })
         #expect(store.state.cropAspectRatio == nil)
+        #expect(store.state.pages.map(\.crop) == framed)
+
+        // And one page can now be reshaped on its own, with the rest of the
+        // document left alone.
+        let id = store.state.pages[0].id
+        store.setCrop(CropRect(x: 0.1, y: 0.1, width: 0.5, height: 0.2), forPageID: id)
+        #expect(store.state.pages.dropFirst().map(\.crop) == Array(framed.dropFirst()))
     }
 
     @Test func applyToAllCopiesFramingAndKeepsRatioPerPage() async throws {

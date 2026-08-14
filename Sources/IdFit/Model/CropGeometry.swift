@@ -9,6 +9,10 @@ enum CropGeometry {
         case topLeft, topRight, bottomLeft, bottomRight
     }
 
+    enum Edge: Hashable, CaseIterable {
+        case top, bottom, left, right
+    }
+
     /// Smallest allowed crop, as a fraction of the source, to keep the rect
     /// grabbable and the export meaningful.
     static let minimumFraction: Double = 0.05
@@ -52,6 +56,17 @@ enum CropGeometry {
         case .topRight: CGPoint(x: rect.maxX, y: rect.minY)
         case .bottomLeft: CGPoint(x: rect.minX, y: rect.maxY)
         case .bottomRight: CGPoint(x: rect.maxX, y: rect.maxY)
+        }
+    }
+
+    /// The midpoint of a given edge of the crop, in source pixels.
+    static func edgePoint(_ edge: Edge, of crop: CropRect, sourceSize: CGSize) -> CGPoint {
+        let rect = pixelRect(crop, sourceSize: sourceSize)
+        return switch edge {
+        case .top: CGPoint(x: rect.midX, y: rect.minY)
+        case .bottom: CGPoint(x: rect.midX, y: rect.maxY)
+        case .left: CGPoint(x: rect.minX, y: rect.midY)
+        case .right: CGPoint(x: rect.maxX, y: rect.midY)
         }
     }
 
@@ -133,17 +148,17 @@ enum CropGeometry {
         return cropRect(rect, sourceSize: sourceSize)
     }
 
-    /// Resizes the crop by dragging one corner; the opposite corner stays
-    /// put, the ratio is preserved, and the result stays inside the source.
+    /// Resizes the crop by dragging one corner; the opposite corner stays put
+    /// and the result stays inside the source. With a ratio the crop keeps its
+    /// shape; without one the two sides follow the pointer independently.
     static func resized(
         _ crop: CropRect,
         corner: Corner,
         toPixelPoint point: CGPoint,
-        outputRatio: Double,
+        outputRatio: Double?,
         sourceSize: CGSize,
         rotation: Int = 0
     ) -> CropRect {
-        let aspect = sourceAspect(outputRatio: outputRatio, rotation: rotation)
         let rect = pixelRect(crop, sourceSize: sourceSize)
 
         let anchor: CGPoint
@@ -158,22 +173,31 @@ enum CropGeometry {
         let goingUp = point.y < anchor.y
         let maxWidth = goingLeft ? anchor.x : sourceSize.width - anchor.x
         let maxHeight = goingUp ? anchor.y : sourceSize.height - anchor.y
+        let minWidth = min(max(minimumFraction * sourceSize.width, 1), maxWidth)
 
         var width = min(abs(point.x - anchor.x), maxWidth)
-        var height = width / aspect
-        if height > maxHeight {
-            height = maxHeight
-            width = height * aspect
-        }
-
-        let minWidth = max(minimumFraction * sourceSize.width, 1)
-        if width < minWidth {
-            width = min(minWidth, maxWidth)
+        var height: Double
+        if let outputRatio {
+            let aspect = sourceAspect(outputRatio: outputRatio, rotation: rotation)
             height = width / aspect
             if height > maxHeight {
                 height = maxHeight
                 width = height * aspect
             }
+            // The source's edge wins over the minimum: a crop pushed into a
+            // corner has to be allowed to end up smaller than it likes.
+            if width < minWidth {
+                width = minWidth
+                height = width / aspect
+                if height > maxHeight {
+                    height = maxHeight
+                    width = height * aspect
+                }
+            }
+        } else {
+            let minHeight = min(max(minimumFraction * sourceSize.height, 1), maxHeight)
+            width = max(width, minWidth)
+            height = min(max(abs(point.y - anchor.y), minHeight), maxHeight)
         }
 
         let result = CGRect(
@@ -183,5 +207,95 @@ enum CropGeometry {
             height: height
         )
         return cropRect(result, sourceSize: sourceSize)
+    }
+
+    /// Resizes the crop by dragging one edge, along that edge's axis only —
+    /// the opposite edge stays put either way.
+    ///
+    /// With a ratio the whole crop is scaled, so the other axis has to give as
+    /// well; it grows and shrinks about the centre it already has, which is
+    /// what keeps the drag feeling like a scale rather than a slide.
+    static func resized(
+        _ crop: CropRect,
+        edge: Edge,
+        toPixelPoint point: CGPoint,
+        outputRatio: Double?,
+        sourceSize: CGSize,
+        rotation: Int = 0
+    ) -> CropRect {
+        let rect = pixelRect(crop, sourceSize: sourceSize)
+        let aspect = outputRatio.map { sourceAspect(outputRatio: $0, rotation: rotation) }
+
+        switch edge {
+        case .left, .right:
+            let anchor = edge == .left ? rect.maxX : rect.minX
+            let (width, height) = edgeLengths(
+                dragged: edge == .left ? anchor - point.x : point.x - anchor,
+                anchorRoom: edge == .left ? anchor : sourceSize.width - anchor,
+                centeredRoom: 2 * min(rect.midY, sourceSize.height - rect.midY),
+                acrossPerAlong: aspect.map { 1 / $0 },
+                across: rect.height,
+                minimumAlong: max(minimumFraction * sourceSize.width, 1)
+            )
+            return cropRect(CGRect(
+                x: edge == .left ? anchor - width : anchor,
+                y: aspect == nil ? rect.minY : rect.midY - height / 2,
+                width: width,
+                height: height
+            ), sourceSize: sourceSize)
+        case .top, .bottom:
+            let anchor = edge == .top ? rect.maxY : rect.minY
+            let (height, width) = edgeLengths(
+                dragged: edge == .top ? anchor - point.y : point.y - anchor,
+                anchorRoom: edge == .top ? anchor : sourceSize.height - anchor,
+                centeredRoom: 2 * min(rect.midX, sourceSize.width - rect.midX),
+                acrossPerAlong: aspect,
+                across: rect.width,
+                minimumAlong: max(minimumFraction * sourceSize.height, 1)
+            )
+            return cropRect(CGRect(
+                x: aspect == nil ? rect.minX : rect.midX - width / 2,
+                y: edge == .top ? anchor - height : anchor,
+                width: width,
+                height: height
+            ), sourceSize: sourceSize)
+        }
+    }
+
+    /// The two lengths an edge drag settles on, seen from the dragged edge:
+    /// `along` runs across that edge — the distance the pointer controls — and
+    /// `across` is the perpendicular one, free only when a ratio ties it to
+    /// the first. Written once for both axes, which differ only in which of
+    /// the two the ratio multiplies.
+    private static func edgeLengths(
+        dragged: Double,
+        anchorRoom: Double,
+        centeredRoom: Double,
+        acrossPerAlong: Double?,
+        across: Double,
+        minimumAlong: Double
+    ) -> (along: Double, across: Double) {
+        // Dragging an edge past the one it is anchored to does not flip the
+        // crop over: it just stops at the smallest allowed size.
+        let minimum = min(minimumAlong, anchorRoom)
+        var along = min(max(dragged, 0), anchorRoom)
+        guard let scale = acrossPerAlong else {
+            return (max(along, minimum), across)
+        }
+
+        var other = along * scale
+        if other > centeredRoom {
+            other = centeredRoom
+            along = other / scale
+        }
+        if along < minimum {
+            along = minimum
+            other = along * scale
+            if other > centeredRoom {
+                other = centeredRoom
+                along = other / scale
+            }
+        }
+        return (along, other)
     }
 }

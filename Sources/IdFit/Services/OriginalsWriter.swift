@@ -23,7 +23,9 @@ enum OriginalsWriter {
         makeBackup: Bool,
         sharedRatio: AspectRatio? = nil
     ) throws -> Result {
-        let candidates = pages.filter { $0.crop != nil || $0.rotation != 0 || $0.quad != nil }
+        let candidates = pages.filter {
+            $0.crop != nil || $0.rotation != 0 || $0.quad != nil || $0.tilt != 0
+        }
 
         // A file that appears twice in the document cannot be rewritten: the
         // two copies are framed differently and only one of them would fit.
@@ -60,10 +62,11 @@ enum OriginalsWriter {
             }
             do {
                 let applied: [UUID]
-                // A straightened page cannot be expressed as a crop box, so
-                // it is rewritten as pixels even when it came from a PDF.
-                let straightened = filePages.contains { $0.quad != nil }
-                if url.pathExtension.lowercased() == "pdf" && !straightened {
+                // Neither a warp nor a fine turn can be expressed as a crop
+                // box, so such a page is rewritten as pixels even when it came
+                // from a PDF.
+                let warped = filePages.contains { $0.quad != nil || $0.tilt != 0 }
+                if url.pathExtension.lowercased() == "pdf" && !warped {
                     try applyToPDF(at: url, pages: filePages, backupFolder: backupFolder)
                     applied = filePages.map(\.id)
                 } else {

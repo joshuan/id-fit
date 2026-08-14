@@ -293,6 +293,76 @@ import UniformTypeIdentifiers
         }
     }
 
+    /// With no format shared by the document, the corners are the only thing
+    /// that says what shape the page is — so that is the shape it comes out.
+    @MainActor
+    @Test func aStraightenedPageWithoutACommonFormatKeepsItsOwnShape() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = CGSize(width: 1000, height: 1200)
+        // A document lying well wide of the scan's own proportions, so the
+        // result cannot be mistaken for the untouched page.
+        let wide = DocumentQuad(
+            topLeft: CGPoint(x: 0.10, y: 0.30),
+            topRight: CGPoint(x: 0.90, y: 0.24),
+            bottomRight: CGPoint(x: 0.92, y: 0.62),
+            bottomLeft: CGPoint(x: 0.08, y: 0.68)
+        )
+        let destination = CGImageDestinationCreateWithURL(
+            folder.appendingPathComponent("a.png") as CFURL, UTType.png.identifier as CFString, 1, nil
+        )!
+        CGImageDestinationAddImage(destination, skewedScan(size: source, quad: wide), nil)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        // Settles the background pass, so nothing arrives after the corners
+        // are set and flattens the page again.
+        await store.redetectEdgesOnAllPages()
+        #expect(store.state.cropAspectRatio == nil)
+        store.setQuad(wide, forPageID: store.state.pages[0].id)
+
+        let output = folder.deletingLastPathComponent()
+            .appendingPathComponent("own-shape-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: output) }
+        await store.exportPDF(to: output, paper: .fitContent)
+        #expect(store.lastError == nil)
+
+        let document = try #require(CGPDFDocument(output as CFURL))
+        let page = try #require(document.page(at: 1))
+        let box = page.getBoxRect(.mediaBox)
+        let natural = try #require(wide.naturalAspect(sourceSize: source))
+        #expect(abs(box.width / box.height - natural) < 0.02)
+
+        // And it really is straightened: the halves sit level across the page.
+        let width = 300
+        let height = Int(Double(width) / (box.width / box.height))
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { buffer in
+            let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: width * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            context.scaleBy(x: Double(width) / box.width, y: Double(height) / box.height)
+            context.translateBy(x: -box.minX, y: -box.minY)
+            context.drawPDFPage(page)
+        }
+        func colour(x: Double, y: Double) -> (r: Int, g: Int, b: Int) {
+            let px = min(max(Int(x * Double(width)), 0), width - 1)
+            let py = min(max(Int(y * Double(height)), 0), height - 1)
+            let offset = (py * width + px) * 4
+            return (Int(pixels[offset]), Int(pixels[offset + 1]), Int(pixels[offset + 2]))
+        }
+        for x in [0.15, 0.5, 0.85] {
+            #expect(colour(x: x, y: 0.25).r > 170)
+            #expect(colour(x: x, y: 0.75).b > 170)
+        }
+    }
+
     @Test func oldStateFilesWithoutCornersStillLoad() throws {
         let json = """
         {"pages": [{"source": {"file": "a.jpg"}}]}

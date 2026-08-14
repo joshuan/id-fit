@@ -63,6 +63,12 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// photograph, mapped back onto a true rectangle on export. Nil means the
     /// page is taken as-is and only the upright `crop` applies.
     var quad: DocumentQuad?
+    /// Fine rotation in clockwise degrees, for a scan that is off true by a
+    /// degree or two.
+    ///
+    /// Mutually exclusive with `quad`, which already carries any tilt in its
+    /// corners: while a page is straightened this stays 0.
+    var tilt: Double
 
     init(
         id: UUID = UUID(),
@@ -71,7 +77,8 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         crop: CropRect? = nil,
         autoDetected: Bool = false,
         transposedRatio: Bool = false,
-        quad: DocumentQuad? = nil
+        quad: DocumentQuad? = nil,
+        tilt: Double = 0
     ) {
         self.id = id
         self.source = source
@@ -80,6 +87,13 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.autoDetected = autoDetected
         self.transposedRatio = transposedRatio
         self.quad = quad
+        self.tilt = tilt
+    }
+
+    // Spelled out because writing both halves of Codable by hand stops the
+    // compiler from working them out.
+    private enum CodingKeys: String, CodingKey {
+        case id, source, rotation, crop, autoDetected, transposedRatio, quad, tilt
     }
 
     init(from decoder: Decoder) throws {
@@ -91,6 +105,21 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.autoDetected = try container.decodeIfPresent(Bool.self, forKey: .autoDetected) ?? false
         self.transposedRatio = try container.decodeIfPresent(Bool.self, forKey: .transposedRatio) ?? false
         self.quad = try container.decodeIfPresent(DocumentQuad.self, forKey: .quad)
+        self.tilt = try container.decodeIfPresent(Double.self, forKey: .tilt) ?? 0
+    }
+
+    /// Written by hand only so that an untilted page — which is nearly every
+    /// page — does not gain a field saying so. The document is read by people.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(source, forKey: .source)
+        try container.encode(rotation, forKey: .rotation)
+        try container.encodeIfPresent(crop, forKey: .crop)
+        try container.encode(autoDetected, forKey: .autoDetected)
+        try container.encode(transposedRatio, forKey: .transposedRatio)
+        try container.encodeIfPresent(quad, forKey: .quad)
+        if tilt != 0 { try container.encode(tilt, forKey: .tilt) }
     }
 }
 
@@ -161,7 +190,8 @@ struct ProjectState: Codable, Equatable, Sendable {
     }
 
     /// The proportions this page must export at: the document's shared ratio,
-    /// laid on its side when the page calls for it.
+    /// laid on its side when the page calls for it. Nil when the document has
+    /// no common format and this page is free to be whatever shape it likes.
     func outputRatio(for page: Page) -> Double? {
         page.outputRatio(sharedRatio: cropAspectRatio)
     }

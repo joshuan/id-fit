@@ -51,9 +51,9 @@ struct PageCell: View {
                     // Show the page as it will be exported: rotated, cropped.
                     CroppedImage(
                         image: thumbnail,
-                        // A straightened page is already exactly its own
-                        // content; there is nothing left to crop off.
-                        crop: page.quad == nil
+                        // A straightened or tilted page is already exactly its
+                        // own content; there is nothing left to crop off.
+                        crop: page.quad == nil && page.tilt == 0
                             ? page.crop.map { CropGeometry.rotated($0, by: page.rotation) }
                             : nil,
                         outputRatio: outputRatio
@@ -90,22 +90,45 @@ struct PageCell: View {
         .contentShape(Rectangle())
         .task(id: PageThumbnailKey(page)) {
             guard !isMissing else { return }
-            // Corners are now dragged with this cell on screen, and every
-            // pixel of that drag arrives here as a new key. A page that
-            // already has a picture waits for the drag to settle rather than
-            // straightening itself dozens of times a second; a page showing
-            // nothing yet is loaded at once.
-            if page.quad != nil && thumbnail != nil {
+            // Corners and the tilt slider are now dragged with this cell on
+            // screen, and every step of that drag arrives here as a new key. A
+            // page that already has a picture waits for the drag to settle
+            // rather than warping itself dozens of times a second; a page
+            // showing nothing yet is loaded at once.
+            if (page.quad != nil || page.tilt != 0) && thumbnail != nil {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard !Task.isCancelled else { return }
             }
             guard let image = await ThumbnailProvider.shared.thumbnail(for: page.source, in: folder) else { return }
+            let size = CGSize(width: image.width, height: image.height)
 
             // Straightened pages are shown straightened, so the grid matches
             // what the export will contain.
-            if let quad = page.quad, let outputRatio {
-                let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: page.rotation)
-                if let corrected = PerspectiveCorrector.straighten(image, quad: quad, targetAspect: aspect) {
+            if let quad = page.quad,
+               let aspect = PageRenderer.straighteningAspect(
+                   quad: quad,
+                   outputRatio: outputRatio,
+                   rotation: page.rotation,
+                   sourceSize: size
+               ),
+               let corrected = PerspectiveCorrector.straighten(image, quad: quad, targetAspect: aspect) {
+                thumbnail = PageRenderer.rotate(corrected, by: page.rotation)
+                return
+            }
+
+            // A tilted page travels the same road, its corners being the crop
+            // turned under the page.
+            if page.quad == nil, page.tilt != 0 {
+                let crop = TiltGeometry.fitted(
+                    page.crop ?? CropRect(x: 0, y: 0, width: 1, height: 1),
+                    tilt: page.tilt, sourceSize: size
+                )
+                let aspect = CropGeometry.exportedRatio(crop, sourceSize: size)
+                if aspect > 0, let corrected = PerspectiveCorrector.straighten(
+                    image,
+                    quad: TiltGeometry.derivedQuad(crop: crop, tilt: page.tilt, sourceSize: size),
+                    targetAspect: aspect
+                ) {
                     thumbnail = PageRenderer.rotate(corrected, by: page.rotation)
                     return
                 }
@@ -125,14 +148,15 @@ struct PageCell: View {
     }
 }
 
-/// Renders only the cropped region of an image, at the shared output ratio.
+/// Renders only the cropped region of an image, at the proportions it will
+/// export with.
 private struct CroppedImage: View {
     let image: CGImage
     let crop: CropRect?
     let outputRatio: Double?
 
     var body: some View {
-        if let crop, let outputRatio, crop.width > 0, crop.height > 0 {
+        if let crop, crop.width > 0, crop.height > 0 {
             GeometryReader { geometry in
                 let fullWidth = geometry.size.width / crop.width
                 let fullHeight = geometry.size.height / crop.height
@@ -141,12 +165,18 @@ private struct CroppedImage: View {
                     .frame(width: fullWidth, height: fullHeight)
                     .offset(x: -crop.x * fullWidth, y: -crop.y * fullHeight)
             }
-            .aspectRatio(outputRatio, contentMode: .fit)
+            // Without a common format the crop's own proportions are the
+            // page's, measured on the picture the crop was drawn over.
+            .aspectRatio(outputRatio ?? shownRatio(crop), contentMode: .fit)
             .clipped()
         } else {
             Image(decorative: image, scale: 1)
                 .resizable()
                 .scaledToFit()
         }
+    }
+
+    private func shownRatio(_ crop: CropRect) -> Double {
+        (crop.width * Double(image.width)) / (crop.height * Double(image.height))
     }
 }

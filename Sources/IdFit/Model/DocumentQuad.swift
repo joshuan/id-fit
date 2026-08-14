@@ -101,6 +101,15 @@ struct DocumentQuad: Codable, Equatable, Hashable, Sendable {
             .max() ?? 0
     }
 
+    /// The proportions the document itself has, as its own corners describe
+    /// them. Without a format shared by the whole document this is the only
+    /// thing that says what shape a straightened page should come out.
+    func naturalAspect(sourceSize: CGSize) -> Double? {
+        let size = rectifiedSize(sourceSize: sourceSize)
+        guard size.width > 0, size.height > 0 else { return nil }
+        return size.width / size.height
+    }
+
     /// Rough pixel size of the straightened result, taken from the longest
     /// opposing edges so nothing is downsampled.
     func rectifiedSize(sourceSize: CGSize) -> CGSize {

@@ -8,7 +8,9 @@ import Vision
 /// Uses Vision's document segmentation model, which ships with macOS — no
 /// third-party code involved. It returns a quadrilateral that follows the
 /// document's tilt; the app's crops are upright rectangles, so what is used
-/// here is the box enclosing that quadrilateral.
+/// here is the box enclosing that quadrilateral — either as it lies, or, when
+/// the corners turn out to be a rectangle merely lying askew, turned back
+/// upright first and offered together with the angle (`tiltProposal`).
 enum DocumentEdgeDetector {
     /// Detection runs on a downscaled render: the model does not need the
     /// full resolution, and the result is normalized, so it maps back to the
@@ -61,6 +63,43 @@ enum DocumentEdgeDetector {
         let crop = quad.boundingCrop
         guard isUseful(crop) else { return nil }
         return Detection(quad: quad, crop: crop)
+    }
+
+    // MARK: - Reading a lean out of the corners
+
+    /// What a detection says when the document is not photographed from an
+    /// angle but simply lying askew on the glass.
+    struct TiltProposal: Equatable, Sendable {
+        /// Ready for `Page.tilt`: the turn that puts the document back
+        /// upright, which is the lean it was measured at, negated.
+        var tilt: Double
+        /// The document's own rectangle — the crop the tilt goes with, rather
+        /// than the box holding the corners and the slivers beside them.
+        var crop: CropRect
+    }
+
+    /// Widest the four edges may disagree about the lean before the shape is
+    /// taken for a document seen from an angle. A tilt turns the page and
+    /// nothing more, so proposing one for a trapezium would leave it just as
+    /// far out of square, only pointing a different way; those go to
+    /// straightening or to the box around them.
+    static let maximumEdgeSpread: Double = 1.5
+
+    /// The tilt a detected quad is worth, if any: nil when the corners are not
+    /// a rotated rectangle, and nil when the lean is finer than the app can
+    /// store, where the box around the corners is already the document.
+    static func tiltProposal(for quad: DocumentQuad, sourceSize: CGSize) -> TiltProposal? {
+        guard let lean = TiltGeometry.lean(of: quad, sourceSize: sourceSize),
+              lean.spread <= maximumEdgeSpread,
+              abs(lean.angle) >= TiltGeometry.step else { return nil }
+
+        // Quantized before the crop is taken, so the crop and the tilt that is
+        // stored describe the same rectangle rather than one a rounding apart.
+        let angle = TiltGeometry.quantized(lean.angle)
+        return TiltProposal(
+            tilt: -angle,
+            crop: TiltGeometry.uprightBox(of: quad, lean: angle, sourceSize: sourceSize)
+        )
     }
 
     /// Largest share of the scan a suggestion may cover. On a featureless

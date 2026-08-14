@@ -34,13 +34,18 @@ enum PageRenderer {
 
     /// - Parameter outputRatio: the proportions the page must end up with,
     ///   needed only when straightening, which maps the document's corners
-    ///   onto exactly that shape.
+    ///   onto exactly that shape. Nil where the document has no shared format
+    ///   and each page keeps its own.
     static func content(for page: Page, in folder: URL, outputRatio: Double? = nil) -> Content? {
         let url = folder.appendingPathComponent(page.source.file)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
-        if let quad = page.quad, let outputRatio {
+        if let quad = page.quad {
             return straightened(page: page, quad: quad, outputRatio: outputRatio, url: url, in: folder)
+        }
+
+        if page.tilt != 0 {
+            return tilted(page: page, url: url, in: folder)
         }
 
         if url.pathExtension.lowercased() == "pdf" {
@@ -78,30 +83,73 @@ enum PageRenderer {
         }
     }
 
+    /// The shape a straightened page is mapped onto, in the *unrotated*
+    /// source's own space. A shared format decides it where there is one —
+    /// held sideways when the page is turned — and otherwise the document's
+    /// four corners are the only thing that says what shape it is.
+    static func straighteningAspect(
+        quad: DocumentQuad,
+        outputRatio: Double?,
+        rotation: Int,
+        sourceSize: CGSize
+    ) -> Double? {
+        guard let outputRatio else { return quad.naturalAspect(sourceSize: sourceSize) }
+        return CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: rotation)
+    }
+
+    /// A tilted page takes the straightening road: the crop covers a turned
+    /// rectangle of the scan, and mapping that back onto an upright one is
+    /// exactly what the perspective corrector does. The shape asked for is the
+    /// crop's own — which is the shared format where there is one, crops being
+    /// held to it — so tilting a page never changes what it exports at.
+    private static func tilted(page: Page, url: URL, in folder: URL) -> Content? {
+        guard let source = sourcePixels(for: page, at: url, in: folder) else { return nil }
+        let size = CGSize(width: source.width, height: source.height)
+
+        // Without a crop the whole scan is the page; it still has to give up
+        // the corners the turn costs it.
+        let crop = TiltGeometry.fitted(
+            page.crop ?? CropRect(x: 0, y: 0, width: 1, height: 1),
+            tilt: page.tilt,
+            sourceSize: size
+        )
+        let aspect = CropGeometry.exportedRatio(crop, sourceSize: size)
+        guard aspect > 0, let corrected = PerspectiveCorrector.straighten(
+            source,
+            quad: TiltGeometry.derivedQuad(crop: crop, tilt: page.tilt, sourceSize: size),
+            targetAspect: aspect
+        ) else { return nil }
+
+        return .image(rotate(corrected, by: page.rotation))
+    }
+
+    /// Pixels to warp. A PDF page cannot stay vector through a warp, so it is
+    /// rasterized at a size that keeps the print usable.
+    private static func sourcePixels(for page: Page, at url: URL, in folder: URL) -> CGImage? {
+        guard url.pathExtension.lowercased() == "pdf" else { return fullResolutionImage(at: url) }
+        return ThumbnailProvider.shared.renderedImage(for: page.source, in: folder, maxPixel: 4000)
+    }
+
     /// Straightening replaces the crop: the quad already says which part of
     /// the photograph is the document. A PDF page has to be rasterized first,
     /// since a warp cannot be expressed in vector page content.
     private static func straightened(
         page: Page,
         quad: DocumentQuad,
-        outputRatio: Double,
+        outputRatio: Double?,
         url: URL,
         in folder: URL
     ) -> Content? {
-        let source: CGImage?
-        if url.pathExtension.lowercased() == "pdf" {
-            source = ThumbnailProvider.shared.renderedImage(
-                for: page.source, in: folder, maxPixel: 4000
-            )
-        } else {
-            source = fullResolutionImage(at: url)
-        }
-        guard let source else { return nil }
+        guard let source = sourcePixels(for: page, at: url, in: folder) else { return nil }
 
         // The quad is drawn on the unrotated source, so it is straightened
         // there too; the page's own turn is applied afterwards.
-        let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: page.rotation)
-        guard let corrected = PerspectiveCorrector.straighten(
+        guard let aspect = straighteningAspect(
+            quad: quad,
+            outputRatio: outputRatio,
+            rotation: page.rotation,
+            sourceSize: CGSize(width: source.width, height: source.height)
+        ), let corrected = PerspectiveCorrector.straighten(
             source, quad: quad, targetAspect: aspect
         ) else { return nil }
 

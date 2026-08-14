@@ -123,6 +123,7 @@ final class DocumentStore {
             state.version = ProjectState.currentVersion
             alignOrientationsWithCorners()
             normalizeCropsToSharedRatio()
+            refitTilts()
             // Opening a folder writes nothing into it. Only a folder that
             // already has a document gets kept up to date — including one
             // still kept by the old hidden dotfile, which is written out as a
@@ -328,7 +329,8 @@ final class DocumentStore {
         }
 
         // Work out which suggestions are still welcome before touching any
-        // crops, since setting the ratio rewrites them all.
+        // crops: a page framed by hand while detection was running keeps the
+        // framing it was given.
         let welcome = detections.filter { detection in
             guard let page = state.pages.first(where: { $0.id == detection.id }),
                   let snapshot = before[detection.id] else { return false }
@@ -341,19 +343,32 @@ final class DocumentStore {
             detectedQuads[entry.id] = entry.detection.quad
         }
 
-        if state.cropAspectRatio == nil,
-           let first = welcome.first,
-           let page = state.pages.first(where: { $0.id == first.id }),
-           let ratio = aspectRatio(of: first.detection.crop, on: page) {
-            // Nothing chosen yet: let the shape of the first document found
-            // set the ratio for the whole batch.
-            setAspectRatio(ratio)
-        }
+        for entry in welcome {
+            guard let index = state.pages.firstIndex(where: { $0.id == entry.id }) else { continue }
+            let sourceSize = sourceSizes[state.pages[index].source]
 
-        if let ratio = state.cropAspectRatio?.ratio {
-            for entry in welcome {
-                guard let index = state.pages.firstIndex(where: { $0.id == entry.id }),
-                      let size = sourceSizes[state.pages[index].source] else { continue }
+            // Only warp a document that is actually askew: nudging an
+            // already-square scan through a resample gains nothing.
+            let straightening = state.straightenByDefault
+                && entry.detection.quad.skew > PerspectiveCorrector.negligibleSkew
+
+            // A page that is not photographed from an angle but simply lying
+            // askew is offered the turn that puts it upright, and framed by
+            // the document rather than by the box around it. Corners being
+            // taken instead already say the angle, and a page carrying both
+            // would be turned twice.
+            let proposal = straightening ? nil : sourceSize.flatMap {
+                DocumentEdgeDetector.tiltProposal(for: entry.detection.quad, sourceSize: $0)
+            }
+
+            // Detection measured the scan as it lies, so the only turn that
+            // survives it is the one it proposed itself; a tilt left over from
+            // the framing before would put the new crop askew.
+            state.pages[index].tilt = proposal?.tilt ?? 0
+            var crop = proposal?.crop ?? entry.detection.crop
+
+            if let ratio = state.cropAspectRatio?.ratio {
+                guard let size = sourceSize else { continue }
 
                 // A page shot sideways is framed by the same shape turned on
                 // its side, rather than being squeezed into the upright one.
@@ -370,55 +385,42 @@ final class DocumentStore {
                     abs(found - 1 / ratio) < abs(found - ratio)
 
                 guard let target = state.outputRatio(for: state.pages[index]) else { continue }
-                state.pages[index].crop = CropGeometry.refit(
-                    entry.detection.crop,
+                crop = CropGeometry.refit(
+                    crop,
                     outputRatio: target,
                     sourceSize: size,
                     rotation: state.pages[index].rotation
                 )
-
-                // Only warp a document that is actually askew: nudging an
-                // already-square scan through a resample gains nothing.
-                if state.straightenByDefault,
-                   entry.detection.quad.skew > PerspectiveCorrector.negligibleSkew {
-                    state.pages[index].quad = entry.detection.quad
-                } else {
-                    state.pages[index].quad = nil
-                }
             }
+            // Without a common format the crop stands as detection left it,
+            // whatever shape that came out: one scan says nothing about how
+            // the next one should be framed.
+            state.pages[index].crop = crop
+            state.pages[index].quad = straightening ? entry.detection.quad : nil
+            // A turned rectangle needs more room than the crop itself, so the
+            // proposed angle has its say before the crop is believed.
+            refitTilt(pageAt: index)
         }
         scheduleSave()
     }
 
-    /// Expresses a crop's exported proportions as an aspect ratio.
-    private func aspectRatio(of crop: CropRect, on page: Page) -> AspectRatio? {
-        guard let size = sourceSizes[page.source] else { return nil }
-        let width = (crop.width * size.width).rounded()
-        let height = (crop.height * size.height).rounded()
-        guard width > 0, height > 0 else { return nil }
-        return page.rotation % 180 == 0
-            ? AspectRatio(width: width, height: height)
-            : AspectRatio(width: height, height: width)
-    }
-
     // MARK: - Cropping
 
-    /// The crop ratio is shared by the whole document, so changing it
-    /// reshapes every page: pages already cropped keep their framing and are
-    /// refitted, the rest get a maximal centered crop. Passing nil clears all
-    /// crops (export uses the full pages).
+    /// Chooses the format the whole document is cropped to, or gives that up.
+    ///
+    /// A format reshapes every page: pages already cropped keep their framing
+    /// and are refitted, the rest get a maximal centered crop. Passing nil is
+    /// the mixed mode, where each page keeps whatever crop it has and is free
+    /// to be framed on its own — so the crops stay, they simply stop being
+    /// held to one shape.
     func setAspectRatio(_ ratio: AspectRatio?) {
         state.cropAspectRatio = ratio
 
-        guard let ratio else {
-            for index in state.pages.indices {
-                state.pages[index].crop = nil
-            }
+        guard ratio != nil else {
             scheduleSave()
             return
         }
 
-        _ = ratio
         for index in state.pages.indices {
             let page = state.pages[index]
             guard let size = sourceSizes[page.source],
@@ -433,6 +435,7 @@ final class DocumentStore {
                 )
             }
         }
+        refitTilts()
         scheduleSave()
     }
 
@@ -461,6 +464,40 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    // MARK: - Tilt
+
+    /// Turns one page by a fine angle — a degree or two of a scan lying askew
+    /// on the glass, which no quarter turn can put right.
+    ///
+    /// A straightened page has no use for it: its corners already say how the
+    /// document lies. Live drags call this on every step, which is what
+    /// debouncing the save is for.
+    func setTilt(_ degrees: Double, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              state.pages[index].quad == nil else { return }
+        let tilt = TiltGeometry.quantized(degrees)
+        guard state.pages[index].tilt != tilt else { return }
+        state.pages[index].tilt = tilt
+        refitTilt(pageAt: index)
+        scheduleSave()
+    }
+
+    /// Keeps every crop within reach of its page's tilt.
+    ///
+    /// A tilted crop covers a turned rectangle of the scan, which needs more
+    /// room than the crop itself — so anything that hands a page a new crop has
+    /// to let the tilt have its say before the crop is believed.
+    private func refitTilts() {
+        for index in state.pages.indices { refitTilt(pageAt: index) }
+    }
+
+    private func refitTilt(pageAt index: Int) {
+        let page = state.pages[index]
+        guard page.tilt != 0, let crop = page.crop,
+              let size = sourceSizes[page.source] else { return }
+        state.pages[index].crop = TiltGeometry.fitted(crop, tilt: page.tilt, sourceSize: size)
+    }
+
     // MARK: - Straightening
 
     /// Whether pages analysed from now on are straightened. Flipping it also
@@ -485,6 +522,9 @@ final class DocumentStore {
               state.pages[index].quad != quad else { return }
         let wasFlat = state.pages[index].quad == nil
         state.pages[index].quad = quad.clampedToUnitSquare()
+        // The corners carry any tilt the page had, so keeping it as well would
+        // turn the page twice.
+        state.pages[index].tilt = 0
         // Starting to straighten: point the page whichever way its document
         // actually lies, or it would be stretched onto the wrong shape.
         if wasFlat {
@@ -500,16 +540,31 @@ final class DocumentStore {
         if state.pages[index].quad != nil {
             flatten(pageAt: index)
         } else {
-            let quad = detectedQuads[id] ?? DocumentQuad(
-                state.pages[index].crop ?? CropRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
-            )
-            straighten(pageAt: index, using: quad)
+            straighten(pageAt: index, using: startingQuad(forPageAt: index))
         }
         scheduleSave()
     }
 
+    /// Where the corners start from when a page is first straightened.
+    ///
+    /// A tilt on the page wins over the corners detection found: the ones it
+    /// implies are the framing on screen right now, and taking a stored guess
+    /// instead would throw that away. Where the tilt is detection's own
+    /// proposal the two describe the same rectangle anyway.
+    private func startingQuad(forPageAt index: Int) -> DocumentQuad {
+        let page = state.pages[index]
+        let crop = page.crop ?? CropRect(x: 0.05, y: 0.05, width: 0.9, height: 0.9)
+        if page.tilt != 0, let size = sourceSizes[page.source] {
+            return TiltGeometry.derivedQuad(crop: crop, tilt: page.tilt, sourceSize: size)
+        }
+        return detectedQuads[page.id] ?? DocumentQuad(crop)
+    }
+
     private func straighten(pageAt index: Int, using quad: DocumentQuad) {
         state.pages[index].quad = quad.clampedToUnitSquare()
+        // The corners carry the tilt now, and applying both would turn the
+        // page twice.
+        state.pages[index].tilt = 0
         alignOrientation(ofPageAt: index, with: state.pages[index].quad!)
     }
 
@@ -517,12 +572,16 @@ final class DocumentStore {
         let page = state.pages[index]
         // Fall back to the upright box around the corners, so turning
         // straightening off still leaves the document framed.
-        if let quad = page.quad,
-           let size = sourceSizes[page.source],
-           let target = state.outputRatio(for: page) {
-            state.pages[index].crop = CropGeometry.refit(
-                quad.boundingCrop, outputRatio: target, sourceSize: size, rotation: page.rotation
-            )
+        if let quad = page.quad {
+            if let size = sourceSizes[page.source], let target = state.outputRatio(for: page) {
+                state.pages[index].crop = CropGeometry.refit(
+                    quad.boundingCrop, outputRatio: target, sourceSize: size, rotation: page.rotation
+                )
+            } else {
+                // Nothing to hold the crop to: the box around the corners is
+                // already the shape this page wants.
+                state.pages[index].crop = quad.boundingCrop
+            }
         }
         state.pages[index].quad = nil
     }
@@ -544,30 +603,49 @@ final class DocumentStore {
                 crop, outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
             )
         }
+        refitTilt(pageAt: index)
         scheduleSave()
     }
 
-    /// Takes the shape the user just drew on one page and makes it the
-    /// document's ratio — the natural way to crop a document that matches no
-    /// preset. The drawn rectangle is given in the page's rotated space.
-    func defineAspectRatio(fromDrawnCrop crop: CropRect, onPageID id: UUID) {
+    /// Frames one page with the rectangle just drawn on it, and nothing else.
+    ///
+    /// Drawing is how a page that has no crop yet gets one, and it says
+    /// nothing about the rest of the document: a folder without a common
+    /// format is a folder where every scan is framed on its own. The
+    /// rectangle is given in the page's rotated space.
+    func drawCrop(_ crop: CropRect, onPageID id: UUID) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              crop.width > 0, crop.height > 0 else { return }
+        state.pages[index].crop = CropGeometry.rotated(crop, by: -state.pages[index].rotation)
+        refitTilt(pageAt: index)
+        scheduleSave()
+    }
+
+    /// Takes the shape one page is framed with and makes it the format the
+    /// whole document shares — the way a document that matches no preset gets
+    /// a common format.
+    func useFramingAsCommonFormat(fromPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let crop = state.pages[index].crop,
               let size = sourceSizes[state.pages[index].source] else { return }
         let rotation = state.pages[index].rotation
         let displayed = rotation % 180 == 0
             ? size
             : CGSize(width: size.height, height: size.width)
 
-        let width = (crop.width * displayed.width).rounded()
-        let height = (crop.height * displayed.height).rounded()
+        // The format is the shape of the exported pixels, which is the crop as
+        // the user sees it — after the page's own turn.
+        let shown = CropGeometry.rotated(crop, by: rotation)
+        let width = (shown.width * displayed.width).rounded()
+        let height = (shown.height * displayed.height).rounded()
         guard width > 0, height > 0 else { return }
 
-        // The page that defines the ratio holds it the right way up.
+        // The page that defines the format holds it the right way up.
         state.pages[index].transposedRatio = false
-        // Every other page gets a centered crop of the new ratio…
+        // Every other page is refitted to the new format…
         setAspectRatio(AspectRatio(width: width, height: height))
         // …while this one keeps exactly the framing that defined it.
-        state.pages[index].crop = CropGeometry.rotated(crop, by: -rotation)
+        state.pages[index].crop = crop
         scheduleSave()
     }
 
@@ -575,35 +653,53 @@ final class DocumentStore {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].crop != crop else { return }
         state.pages[index].crop = crop
+        refitTilt(pageAt: index)
         scheduleSave()
     }
 
     func resetCrop(forPageID id: UUID) {
-        guard let index = state.pages.firstIndex(where: { $0.id == id }),
-              let size = sourceSizes[state.pages[index].source],
-              let target = state.outputRatio(for: state.pages[index]) else { return }
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+
+        // Without a common format there is no shape to recentre onto, so
+        // resetting means no crop at all — which is also what hands the page
+        // back its draw gesture.
+        guard let target = state.outputRatio(for: state.pages[index]) else {
+            guard state.pages[index].crop != nil else { return }
+            state.pages[index].crop = nil
+            scheduleSave()
+            return
+        }
+
+        guard let size = sourceSizes[state.pages[index].source] else { return }
         state.pages[index].crop = CropGeometry.centeredCrop(
             outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
         )
+        refitTilt(pageAt: index)
         scheduleSave()
     }
 
     /// Copies one page's framing onto every page — handy when scans are
-    /// aligned the same way. Each page is refitted to the shared ratio, so
-    /// sources of different pixel sizes still export uniformly.
+    /// aligned the same way. With a common format each page is refitted to it,
+    /// so sources of different pixel sizes still export uniformly; without one
+    /// the pages simply share the same region of their scan.
     func applyCropToAllPages(fromPageID id: UUID) {
-        guard state.cropAspectRatio != nil,
-              let template = state.pages.first(where: { $0.id == id })?.crop else { return }
+        guard let template = state.pages.first(where: { $0.id == id })?.crop else { return }
         for index in state.pages.indices {
             // The page the framing came from is already framed as asked;
             // running it through the fit again could only nudge it.
             guard state.pages[index].id != id else { continue }
-            guard let size = sourceSizes[state.pages[index].source],
-                  let target = state.outputRatio(for: state.pages[index]) else { continue }
+            guard let target = state.outputRatio(for: state.pages[index]) else {
+                // Nothing to fit it to: the same region of the scan is as
+                // close to the same framing as this can get.
+                state.pages[index].crop = template
+                continue
+            }
+            guard let size = sourceSizes[state.pages[index].source] else { continue }
             state.pages[index].crop = CropGeometry.refit(
                 template, outputRatio: target, sourceSize: size, rotation: state.pages[index].rotation
             )
         }
+        refitTilts()
         scheduleSave()
     }
 
@@ -764,6 +860,7 @@ final class DocumentStore {
             for index in state.pages.indices where result.appliedPageIDs.contains(state.pages[index].id) {
                 state.pages[index].crop = nil
                 state.pages[index].rotation = 0
+                state.pages[index].tilt = 0
             }
 
             ThumbnailProvider.shared.invalidate()

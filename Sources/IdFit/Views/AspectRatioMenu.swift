@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The document-wide crop ratio picker. It belongs in the window's toolbar
-/// rather than beside the crop controls: the ratio is a property of the whole
+/// The picker for the format the whole document is cropped to — or for mixed,
+/// where each page is framed on its own. It belongs in the window's toolbar
+/// rather than beside the crop controls: the format is a property of the whole
 /// document, not of the page being framed, and framing now happens in the same
 /// window, so the toolbar stays within reach.
 struct AspectRatioMenu: View {
@@ -26,7 +27,7 @@ struct AspectRatioMenu: View {
         } label: {
             Label(label, systemImage: "aspectratio")
         }
-        .help("Crop aspect ratio, shared by all pages")
+        .help("One crop format for every page, or mixed")
     }
 
     private var currentPreset: AspectRatioPreset? {
@@ -35,7 +36,7 @@ struct AspectRatioMenu: View {
 
     private var label: String {
         if let currentPreset { return currentPreset.title }
-        guard let ratio = store.state.cropAspectRatio else { return AspectRatioPreset.original.title }
+        guard let ratio = store.state.cropAspectRatio else { return AspectRatioPreset.mixed.title }
         return "Custom (\(formatted(ratio.width)) × \(formatted(ratio.height)))"
     }
 

@@ -72,6 +72,9 @@ import UniformTypeIdentifiers
 
         let store = DocumentStore()
         await store.openFolder(folder)
+        // The shape comes first: which way round a page holds it is only
+        // decided against a format the document already has.
+        store.setAspectRatio(AspectRatio(width: 210, height: 297))
         await store.redetectEdgesOnAllPages()
 
         let ratio = try #require(store.state.cropAspectRatio?.ratio)

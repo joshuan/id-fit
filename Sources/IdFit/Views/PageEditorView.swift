@@ -40,6 +40,10 @@ struct PageEditorView: View {
             Divider()
             canvas
             Divider()
+            if page != nil, !isStraightened {
+                tiltBar
+                Divider()
+            }
             PageFilmstrip(store: store, currentID: $pageID)
         }
         .task(id: page.map(PagePreviewKey.init)) { await loadPreview() }
@@ -88,7 +92,6 @@ struct PageEditorView: View {
                 Label("Straighten", systemImage: "skew")
             }
             .toggleStyle(.button)
-            .disabled(!hasRatio)
             .help("Map the document's four corners onto a true rectangle")
 
             Button("Detect Edges", systemImage: "wand.and.rays") {
@@ -103,12 +106,18 @@ struct PageEditorView: View {
                 Button("Reset Crop") {
                     if let page { store.resetCrop(forPageID: page.id) }
                 }
-                .disabled(!hasRatio || isStraightened)
+                .disabled(isStraightened || (!hasRatio && page?.crop == nil))
 
                 Button("Apply This Framing to All Pages") {
                     if let page { store.applyCropToAllPages(fromPageID: page.id) }
                 }
                 .disabled(page?.crop == nil || isStraightened)
+
+                Button("Use This Framing as Common Format") {
+                    if let page { store.useFramingAsCommonFormat(fromPageID: page.id) }
+                }
+                .disabled(page?.crop == nil || isStraightened)
+                .help("Crop every page to the shape this one is framed with")
 
                 Button(orientationButtonTitle) {
                     if let page { store.toggleCropOrientation(forPageID: page.id) }
@@ -169,6 +178,72 @@ struct PageEditorView: View {
         }
     }
 
+    // MARK: - Tilt
+
+    /// A strip of its own rather than another button in the bar above: this is
+    /// a continuous adjustment, wants room to be dragged in, and should stay
+    /// quiet until somebody looks for it.
+    private var tiltBar: some View {
+        HStack(spacing: 10) {
+            Text("Tilt")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // The curve spends most of the travel near zero, where scans
+            // actually lie, and the quantized angle is 0 across a small band
+            // around the middle — which is the detent.
+            Slider(value: tiltPosition, in: -1...1)
+                .controlSize(.small)
+                .frame(maxWidth: 420)
+
+            TextField("Degrees", value: tiltDegrees, format: .number.precision(.fractionLength(1)))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .monospacedDigit()
+                .frame(width: 62)
+            Text("°")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Button {
+                if let page { store.setTilt(0, forPageID: page.id) }
+            } label: {
+                Label("Reset Tilt", systemImage: "arrow.counterclockwise").labelStyle(.iconOnly)
+            }
+            .buttonStyle(.borderless)
+            .help("Straighten up (0°)")
+            // Kept in the layout so the row does not twitch as the tilt
+            // crosses zero.
+            .opacity(page?.tilt == 0 ? 0 : 1)
+            .disabled(page?.tilt == 0)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .background(.bar)
+    }
+
+    private var tiltPosition: Binding<Double> {
+        Binding(
+            get: { TiltGeometry.sliderPosition(forAngle: page?.tilt ?? 0) },
+            set: { position in
+                guard let page else { return }
+                store.setTilt(TiltGeometry.angle(atSliderPosition: position), forPageID: page.id)
+            }
+        )
+    }
+
+    private var tiltDegrees: Binding<Double> {
+        Binding(
+            get: { page?.tilt ?? 0 },
+            set: { degrees in
+                guard let page else { return }
+                store.setTilt(degrees, forPageID: page.id)
+            }
+        )
+    }
+
     /// Names the shape the button would switch to, not the current one.
     private var orientationButtonTitle: String {
         guard let page, let ratio = store.state.outputRatio(for: page) else {
@@ -226,12 +301,15 @@ struct PageEditorView: View {
                     image: preview,
                     displayedSize: size,
                     crop: page.crop.map { CropGeometry.rotated($0, by: page.rotation) },
+                    // A quarter turn does not change which way a fine turn
+                    // goes, so the same angle serves both spaces.
+                    tilt: page.tilt,
                     outputRatio: store.state.outputRatio(for: page),
                     onChange: { edited in
                         store.setCrop(CropGeometry.rotated(edited, by: -page.rotation), forPageID: page.id)
                     },
                     onDraw: { drawn in
-                        store.defineAspectRatio(fromDrawnCrop: drawn, onPageID: page.id)
+                        store.drawCrop(drawn, onPageID: page.id)
                     },
                     onDistort: { quad in
                         store.setQuad(
@@ -267,15 +345,15 @@ struct PageEditorView: View {
     }
 
     private var advice: (text: String, icon: String)? {
-        guard page != nil, preview != nil else { return nil }
-        if !hasRatio {
-            return (
-                "Drag on the page to draw a crop — its shape becomes the ratio for every page",
-                "hand.draw"
-            )
-        }
+        guard let page, preview != nil else { return nil }
         if isStraightened {
             return ("Drag each corner onto the document's own corners", "skew")
+        }
+        if page.crop == nil {
+            return (
+                "Drag on the page to crop this page — one format for all of them is in the toolbar",
+                "hand.draw"
+            )
         }
         return ("Hold ⌘ while dragging a corner to correct perspective", "command")
     }
