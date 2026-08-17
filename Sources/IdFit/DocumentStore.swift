@@ -834,6 +834,10 @@ final class DocumentStore {
         lastError = message
     }
 
+    func clearError() {
+        lastError = nil
+    }
+
     // MARK: - Applying to the originals
 
     /// The single destructive action in the app: rewrites the source files
@@ -856,11 +860,14 @@ final class DocumentStore {
             }.value
 
             // The files now contain the crop, so keeping it in the state
-            // would apply it a second time on the next export.
+            // would apply it a second time on the next export. Corners say the
+            // same thing about a page that has already been pulled square, so
+            // they go with it.
             for index in state.pages.indices where result.appliedPageIDs.contains(state.pages[index].id) {
                 state.pages[index].crop = nil
                 state.pages[index].rotation = 0
                 state.pages[index].tilt = 0
+                state.pages[index].quad = nil
             }
 
             ThumbnailProvider.shared.invalidate()
@@ -875,7 +882,9 @@ final class DocumentStore {
             if !result.failures.isEmpty {
                 lastError = "Some files could not be updated: \(result.failures.joined(separator: ", "))"
             }
-            lastApplyResult = result
+            // A run that rewrote nothing has nothing to announce: saying
+            // "changes applied" over a count of zero reads as success.
+            if !result.changedFiles.isEmpty { lastApplyResult = result }
         } catch {
             lastError = "Could not apply changes: \(error.localizedDescription)"
         }

@@ -62,12 +62,11 @@ enum OriginalsWriter {
             }
             do {
                 let applied: [UUID]
-                // Neither a warp nor a fine turn can be expressed as a crop
-                // box, so such a page is rewritten as pixels even when it came
-                // from a PDF.
-                let warped = filePages.contains { $0.quad != nil || $0.tilt != 0 }
-                if url.pathExtension.lowercased() == "pdf" && !warped {
-                    try applyToPDF(at: url, pages: filePages, backupFolder: backupFolder)
+                if url.pathExtension.lowercased() == "pdf" {
+                    try applyToPDF(
+                        at: url, pages: filePages, folder: folder,
+                        backupFolder: backupFolder, sharedRatio: sharedRatio
+                    )
                     applied = filePages.map(\.id)
                 } else {
                     // An image file backs exactly one page; only that page's
@@ -114,14 +113,44 @@ enum OriginalsWriter {
 
     /// Cropping a PDF means narrowing its crop box — the page content stays
     /// untouched and fully vector.
-    private static func applyToPDF(at url: URL, pages: [Page], backupFolder: URL?) throws {
+    ///
+    /// Neither a warp nor a fine turn can be said in a crop box, so a page
+    /// carrying one is replaced by the corrected pixels. Only that page is:
+    /// the rest of the file keeps its own content, and a file whose pages the
+    /// document never mentions is not touched at all.
+    private static func applyToPDF(
+        at url: URL,
+        pages: [Page],
+        folder: URL,
+        backupFolder: URL?,
+        sharedRatio: AspectRatio?
+    ) throws {
         guard let document = PDFDocument(url: url) else {
             throw ImageWriter.WriteError.unsupportedFormat(url.lastPathComponent)
         }
 
+        // The documents the replacement pages came out of. A page inserted from
+        // elsewhere still reads its content through the document that made it,
+        // so they have to outlive the write.
+        var sources: [PDFDocument] = []
+
         for page in pages {
             let index = page.source.pdfPage ?? 0
             guard let pdfPage = document.page(at: index) else { continue }
+
+            if page.quad != nil || page.tilt != 0 {
+                guard let source = rasterizedPage(
+                    for: page, in: folder, replacing: pdfPage, sharedRatio: sharedRatio
+                ), let replacement = source.page(at: 0) else {
+                    throw ImageWriter.WriteError.encodingFailed(url.lastPathComponent)
+                }
+                sources.append(source)
+                // The corrected pixels already carry the crop and both turns,
+                // so the page that replaces this one needs nothing further.
+                document.removePage(at: index)
+                document.insert(replacement, at: index)
+                continue
+            }
 
             let box = pdfPage.bounds(for: .cropBox)
             if let crop = page.crop, box.width > 0, box.height > 0 {
@@ -142,11 +171,101 @@ enum OriginalsWriter {
             }
         }
 
-        try replaceFile(at: url, backupFolder: backupFolder) { temp in
-            guard document.write(to: temp) else {
-                throw ImageWriter.WriteError.encodingFailed(url.lastPathComponent)
+        try withExtendedLifetime(sources) {
+            try replaceFile(at: url, backupFolder: backupFolder) { temp in
+                guard document.write(to: temp) else {
+                    throw ImageWriter.WriteError.encodingFailed(url.lastPathComponent)
+                }
             }
         }
+    }
+
+    /// A one-page PDF holding the warped page as corrected pixels.
+    ///
+    /// The correction resamples, so how many pixels it happens to land on says
+    /// nothing about how big the page is; the part of the original it covers is
+    /// what decides that, and keeping it means a page applied to its own file
+    /// still prints at the size it always did.
+    private static func rasterizedPage(
+        for page: Page,
+        in folder: URL,
+        replacing pdfPage: PDFPage,
+        sharedRatio: AspectRatio?
+    ) -> PDFDocument? {
+        let box = pdfPage.bounds(for: .cropBox)
+        guard box.width > 0, box.height > 0 else { return nil }
+
+        guard let size = warpedPageSize(for: page, displayed: displayedSize(of: pdfPage), sharedRatio: sharedRatio),
+              size.width >= 1, size.height >= 1,
+              let image = PageRenderer.image(
+                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+              )
+        else { return nil }
+
+        let data = NSMutableData()
+        var mediaBox = CGRect(origin: .zero, size: size)
+        guard let consumer = CGDataConsumer(data: data),
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)
+        else { return nil }
+
+        context.beginPage(mediaBox: &mediaBox)
+        // As JPEG rather than as raw pixels: this replaces the user's own file,
+        // and a scan that grew fivefold on the way through is not an original
+        // anybody wants back.
+        context.draw(ImageWriter.jpegBacked(image) ?? image, in: mediaBox)
+        context.endPage()
+        context.closePDF()
+
+        return PDFDocument(data: data as Data)
+    }
+
+    /// The page as crops describe it: its crop box with its own rotation
+    /// applied, which is what `SourceGeometry` reports and what normalized
+    /// coordinates are measured against.
+    private static func displayedSize(of pdfPage: PDFPage) -> CGSize {
+        let box = pdfPage.bounds(for: .cropBox)
+        return pdfPage.rotation % 180 == 0
+            ? box.size
+            : CGSize(width: box.height, height: box.width)
+    }
+
+    /// The size, in points, the corrected content is given: the region of the
+    /// page it came from, held to the shape straightening maps it onto and
+    /// never smaller than that region in either direction.
+    private static func warpedPageSize(
+        for page: Page,
+        displayed: CGSize,
+        sharedRatio: AspectRatio?
+    ) -> CGSize? {
+        let outputRatio = page.outputRatio(sharedRatio: sharedRatio)
+        let region: CropRect
+        let aspect: Double
+
+        if let quad = page.quad {
+            region = quad.boundingCrop
+            guard let value = PageRenderer.straighteningAspect(
+                quad: quad, outputRatio: outputRatio, rotation: page.rotation, sourceSize: displayed
+            ) else { return nil }
+            aspect = value
+        } else {
+            // The same fit the export makes: a turned rectangle needs more room
+            // than the crop itself, and the crop gives up what it cannot have.
+            region = TiltGeometry.fitted(
+                page.crop ?? CropRect(x: 0, y: 0, width: 1, height: 1),
+                tilt: page.tilt,
+                sourceSize: displayed
+            )
+            aspect = CropGeometry.exportedRatio(region, sourceSize: displayed)
+        }
+        guard aspect > 0 else { return nil }
+
+        let width = max(region.width * displayed.width, region.height * displayed.height * aspect)
+        // The shape above is the unrotated page's; the content has already been
+        // turned, so the page turns with it.
+        let quarterTurn = ((page.rotation % 360) + 360) % 360 % 180 != 0
+        return quarterTurn
+            ? CGSize(width: width / aspect, height: width)
+            : CGSize(width: width, height: width / aspect)
     }
 
     // MARK: - Safe replacement

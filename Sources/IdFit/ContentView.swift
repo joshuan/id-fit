@@ -48,12 +48,14 @@ struct ContentView: View {
     /// say — is asked in an AppKit panel instead, or it would appear in every
     /// open window at once.
     private enum Notice {
+        case failure(String)
         case export(url: URL, result: PDFExporter.Result)
         case applied(OriginalsWriter.Result)
         case commandLine(String)
 
         var title: String {
             switch self {
+            case .failure: "Something went wrong"
             case .export: "Export finished"
             case .applied: "Changes applied"
             case .commandLine: "Command Line Tool Installed"
@@ -64,6 +66,11 @@ struct ContentView: View {
     /// Only one can be shown at a time, so the order here is the order they
     /// get to speak in.
     private var notice: Notice? {
+        // A failure speaks first: it is the reason nothing else happened, and
+        // an export or an apply that goes wrong has nothing else to report.
+        // Only for a window with a folder open — the welcome screen shows the
+        // errors it can produce in place, and would otherwise say them twice.
+        if store.folderURL != nil, let error = store.lastError { return .failure(error) }
         if let export = store.lastExport { return .export(url: export.url, result: export.result) }
         if let applied = store.lastApplyResult { return .applied(applied) }
         if let text = store.commandLineNotice { return .commandLine(text) }
@@ -72,6 +79,7 @@ struct ContentView: View {
 
     private func dismiss(_ notice: Notice) {
         switch notice {
+        case .failure: store.clearError()
         case .export: store.clearLastExport()
         case .applied: store.clearLastApplyResult()
         case .commandLine: store.clearCommandLineNotice()
@@ -81,6 +89,8 @@ struct ContentView: View {
     @ViewBuilder
     private func buttons(for notice: Notice) -> some View {
         switch notice {
+        case .failure:
+            Button("OK", role: .cancel) { store.clearError() }
         case .export(let url, _):
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -102,6 +112,8 @@ struct ContentView: View {
 
     private func message(for notice: Notice) -> String {
         switch notice {
+        case .failure(let text):
+            text
         case .export(let url, let result):
             exportMessage(url: url, result: result)
         case .applied(let result):

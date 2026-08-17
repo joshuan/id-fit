@@ -154,7 +154,10 @@ enum PDFExporter {
     private static func draw(_ content: PageRenderer.Content, in rect: CGRect, context: CGContext) {
         switch content {
         case .image(let image):
-            context.draw(image, in: rect)
+            // JPEG, not raw pixels: the export exists to be printed or emailed,
+            // and a bitmap page costs ten times what the same page costs
+            // compressed.
+            context.draw(ImageWriter.jpegBacked(image) ?? image, in: rect)
 
         case .pdfPage(let pdfPage, let displayed, let crop, let rotation):
             // Work in the rotated view of the page, so the crop, the page and

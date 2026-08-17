@@ -370,6 +370,104 @@ import UniformTypeIdentifiers
         }
     }
 
+    /// A fine turn cannot be said in a crop box, so the page has to be replaced
+    /// by the corrected pixels — and for a long time it simply was not, which
+    /// left every tilted PDF impossible to apply to its own file.
+    @Test func applyingATiltRewritesTheTiltedPageAndLeavesTheRestVector() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("doc.pdf")
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 3, to: source)
+
+        let topHalf = CropRect(x: 0, y: 0, width: 1, height: 0.4)
+        let result = try OriginalsWriter.apply(
+            pages: [
+                Page(source: SourceRef(file: "doc.pdf", pdfPage: 0), crop: topHalf, tilt: 2),
+                Page(source: SourceRef(file: "doc.pdf", pdfPage: 2),
+                     crop: CropRect(x: 0, y: 0, width: 1, height: 0.5)),
+            ],
+            folder: folder,
+            makeBackup: false
+        )
+
+        #expect(result.failures.isEmpty)
+        #expect(result.changedFiles == ["doc.pdf"])
+        #expect(result.appliedPageIDs.count == 2)
+
+        let document = try #require(PDFDocument(url: source))
+        #expect(document.pageCount == 3)
+
+        // The turned rectangle needs more room than the crop, so the page comes
+        // out at the crop the fit left — in points, not in raster pixels.
+        let turned = try #require(document.page(at: 0)).bounds(for: .cropBox)
+        #expect(abs(turned.width - 392) < 3)
+        #expect(abs(turned.height - 235) < 3)
+
+        // The page that only needed a crop box stays vector, and the page the
+        // document never mentioned is untouched.
+        #expect(try #require(document.page(at: 2)).bounds(for: .cropBox).size == CGSize(width: 400, height: 300))
+        #expect(try #require(document.page(at: 1)).bounds(for: .cropBox).size == CGSize(width: 400, height: 600))
+    }
+
+    @Test func theRewrittenTiltedPageHoldsTheCroppedRegion() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("doc.pdf")
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 1, to: source)
+
+        _ = try OriginalsWriter.apply(
+            pages: [Page(source: SourceRef(file: "doc.pdf", pdfPage: 0),
+                         crop: CropRect(x: 0, y: 0, width: 1, height: 0.4), tilt: 2)],
+            folder: folder,
+            makeBackup: false
+        )
+
+        ThumbnailProvider.shared.invalidate()
+        SourceGeometry.shared.invalidate()
+
+        // Rendering the file back is the only way to know the right part of the
+        // page survived: the crop took the red top, so red is all there is.
+        let rendered = try #require(
+            ThumbnailProvider.shared.renderedImage(
+                for: SourceRef(file: "doc.pdf", pdfPage: 0), in: folder, maxPixel: 400
+            )
+        )
+        #expect(isRed(try sample(rendered, atRelativeY: 0.1)))
+        #expect(isRed(try sample(rendered, atRelativeY: 0.5)))
+    }
+
+    @Test func applyingCornersToAPDFRewritesThatPageOnly() throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("doc.pdf")
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 2, to: source)
+
+        let result = try OriginalsWriter.apply(
+            pages: [Page(
+                source: SourceRef(file: "doc.pdf", pdfPage: 0),
+                quad: DocumentQuad(
+                    topLeft: CGPoint(x: 0.05, y: 0.04),
+                    topRight: CGPoint(x: 0.95, y: 0.06),
+                    bottomRight: CGPoint(x: 0.94, y: 0.44),
+                    bottomLeft: CGPoint(x: 0.06, y: 0.42)
+                )
+            )],
+            folder: folder,
+            makeBackup: false
+        )
+
+        #expect(result.failures.isEmpty)
+        #expect(result.changedFiles == ["doc.pdf"])
+
+        let document = try #require(PDFDocument(url: source))
+        #expect(document.pageCount == 2)
+        // Straightened to the shape its own corners describe, at the size it
+        // occupied — not at whatever pixel count the warp happened to produce.
+        let straightened = try #require(document.page(at: 0)).bounds(for: .cropBox)
+        #expect(straightened.width > 300 && straightened.width < 500)
+        #expect(try #require(document.page(at: 1)).bounds(for: .cropBox).size == CGSize(width: 400, height: 600))
+    }
+
     @Test func pagesWithoutEditsAreNotTouched() throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
@@ -424,6 +522,54 @@ import UniformTypeIdentifiers
         // And the cleared crop is what gets persisted.
         let saved = try #require(try StateStore.load(from: folder))
         #expect(saved.pages[0].crop == nil)
+    }
+
+    /// The whole of what a bug report called "it just does not save": a tilted
+    /// page of a PDF could not be written back to its own file at all, and the
+    /// refusal was never reported.
+    @MainActor
+    @Test func aTiltedPDFPageCanBeAppliedToItsOwnFile() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 2, to: folder.appendingPathComponent("doc.pdf"))
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        #expect(store.state.pages.count == 2)
+        store.setCrop(CropRect(x: 0, y: 0, width: 1, height: 0.4), forPageID: store.state.pages[0].id)
+        store.setTilt(2, forPageID: store.state.pages[0].id)
+        await store.applyToOriginals(makeBackup: true)
+
+        #expect(store.lastError == nil)
+        #expect(store.state.pages[0].tilt == 0)
+        #expect(store.state.pages[0].crop == nil)
+        #expect(try #require(store.lastApplyResult).changedFiles == ["doc.pdf"])
+    }
+
+    /// Corners bake in like a crop does, so they have to be let go of with it —
+    /// a page left holding its quad would be pulled square a second time.
+    @MainActor
+    @Test func applyingCornersLetsGoOfThem() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: folder.appendingPathComponent("scan.png"))
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        store.setQuad(
+            DocumentQuad(
+                topLeft: CGPoint(x: 0.05, y: 0.04),
+                topRight: CGPoint(x: 0.95, y: 0.06),
+                bottomRight: CGPoint(x: 0.94, y: 0.44),
+                bottomLeft: CGPoint(x: 0.06, y: 0.42)
+            ),
+            forPageID: store.state.pages[0].id
+        )
+        await store.applyToOriginals(makeBackup: false)
+
+        #expect(store.lastError == nil)
+        #expect(store.state.pages[0].quad == nil)
+        #expect(try #require(try StateStore.load(from: folder)).pages[0].quad == nil)
     }
 
     @MainActor
