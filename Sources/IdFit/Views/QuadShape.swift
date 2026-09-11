@@ -27,17 +27,34 @@ extension CropGeometry.Corner {
     }
 }
 
-extension View {
-    /// Punches a hole into the receiver — used for the dimmed area around the
-    /// framed part of a page.
-    func reverseMask<Mask: View>(@ViewBuilder _ mask: () -> Mask) -> some View {
-        self.mask {
-            ZStack(alignment: .topLeading) {
-                Rectangle()
-                mask()
-                    .blendMode(.destinationOut)
-            }
-            .compositingGroup()
-        }
+/// The picture with the framed part taken out of it, as one even-odd path —
+/// the dimming both editors lay over everything that will be cropped away.
+///
+/// Both outlines are given in the canvas's own coordinates, which is why the
+/// rect the shape is handed is ignored. One path rather than a masked
+/// rectangle: a mask is composed against the layer's laid-out position while
+/// the picture is carried into place by an offset, so the two came apart and
+/// most of the scan stayed bright.
+struct DimmedArea: Shape {
+    let area: [CGPoint]
+    let hole: [CGPoint]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.addLines(area)
+        path.closeSubpath()
+        path.addLines(hole)
+        path.closeSubpath()
+        return path
+    }
+
+    /// A rectangle's four corners, in the order an outline is written.
+    static func corners(of rect: CGRect) -> [CGPoint] {
+        [
+            CGPoint(x: rect.minX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.minY),
+            CGPoint(x: rect.maxX, y: rect.maxY),
+            CGPoint(x: rect.minX, y: rect.maxY),
+        ]
     }
 }

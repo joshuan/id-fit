@@ -10,17 +10,18 @@ You scanned your passport and ended up with 20 files — some A4, some re-scanne
 
 - **Opens a folder** of scans — JPEG, PNG, TIFF, HEIC and PDF. Each page of a PDF becomes a separate page you can reorder and crop on its own.
 - **Reorders pages** by dragging: the card follows the cursor and the others slide aside to open a gap.
-- **Finds the document in each scan by itself** and proposes a crop, which you then nudge. Uses the Vision framework built into macOS, so nothing is sent anywhere and there is nothing to install. Suggestions that would cover almost the whole scan are discarded rather than shaving a sliver off a page that needed no cropping.
+- **Finds the document in each scan by itself** and proposes a crop, which you then nudge. Uses the Vision framework built into macOS, so nothing is sent anywhere and there is nothing to install. A sheet lying crooked comes back with the angle that puts it upright; one photographed at an angle is squared up by its four corners, which you can drag onto the real ones. Suggestions that would cover almost the whole scan are discarded rather than shaving a sliver off a page that needed no cropping.
 - **Crops each page individually.** Drag a rectangle on a page and that page is framed; every page keeps whatever shape suits it. This is how a folder starts out.
 - **Or crops the whole document to one format**, so the export comes out uniform even when the sources differ in size and DPI. Presets for A4, ID card and passport page, plus a custom ratio — or frame one page the way you want it and choose *Use This Framing as Common Format*. Every page is then held to that shape, laid sideways where a scan calls for it.
-- **Rotates pages** in 90° steps.
+- **Rotates pages** in 90° steps — ⌘L and ⌘R turn the page you are framing, or every page you picked out in the grid.
+- **Deletes a scan you do not want** with ⌘⌫: the file itself goes to the Trash and its pages leave the document. No dialog asks twice, because the Trash is where it went.
 - **Exports to PDF** — pages in your order, crops applied, at full resolution. PDF sources stay vector rather than being rasterized. Choose A4, US Letter, or a page that fits the content exactly.
 - **Remembers everything in a `.idfit` document inside the folder**, once you save one. Opening a folder leaves nothing in it; **Save** (⌘S) writes the document, named after the folder. From then on your edits go into it as you make them, and closing the folder or quitting with work that was never saved asks first. Double-click the document to reopen the folder here. No absolute paths, nothing stored elsewhere: sync the folder to another computer, open it there, and the order and crops are exactly as you left them.
 
 Two explicit, separate actions can touch files:
 
 - **Export cropped files to a folder** — writes each page as its own file, numbered in page order, into a folder you pick (never the one you are editing).
-- **Apply changes to original files** — rewrites the sources with their crops baked in. Confirmed by a dialog, and untouched copies are kept in `.id-fit-originals/` unless you opt out. Images are re-encoded in their original format; PDFs are cropped through their crop box, so they stay vector and lose no pages.
+- **Apply changes to original files** — rewrites the sources with their crops baked in. Confirmed by a dialog, and untouched copies are kept in `.id-fit-originals/` unless you opt out. Images are re-encoded in their original format; PDFs are cropped through their crop box, so they stay vector and lose no pages. When one scan holds two pages of the document — a cover that is both the front and the back — one file cannot hold both framings, so each of those pages is given a copy of its own beside it (`scan-2.png`), and the document follows them there.
 
 ## Opening a folder
 

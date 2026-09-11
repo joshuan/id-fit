@@ -15,6 +15,49 @@ enum OriginalsWriter {
         var appliedPageIDs: Set<UUID> = []
         var failures: [String] = []
         var backupFolder: URL?
+        /// Files written for pages that shared a scan with another page, in
+        /// the order they were made.
+        var createdFiles: [String] = []
+        /// Where those pages point now. The document has to follow them, or it
+        /// would still be two pages on one file with one framing between them.
+        var newSources: [UUID: SourceRef] = [:]
+    }
+
+    /// Whether a page asks anything of its file at all.
+    static func isEdited(_ page: Page) -> Bool {
+        page.crop != nil || page.rotation != 0 || page.quad != nil || page.tilt != 0
+    }
+
+    /// How the pages divide when a scan is claimed more than once.
+    ///
+    /// One scan often holds two pages of the finished document, and the two
+    /// are framed differently. A single file cannot answer both, so the first
+    /// page standing on a source keeps it and the others are given copies of
+    /// their own — otherwise one framing would quietly win.
+    struct Division {
+        /// Pages whose edits go into the file they already point at.
+        var applied: [Page] = []
+        /// Pages that need a file of their own.
+        var spilled: [Page] = []
+    }
+
+    static func divide(_ pages: [Page]) -> Division {
+        var keeper: [SourceRef: Page] = [:]
+        for page in pages where keeper[page.source] == nil { keeper[page.source] = page }
+
+        var division = Division()
+        for page in pages {
+            guard let owner = keeper[page.source] else { continue }
+            if owner.id == page.id {
+                if isEdited(page) { division.applied.append(page) }
+            } else if isEdited(page) || isEdited(owner) {
+                // Framed or not: once the file underneath is rewritten to suit
+                // the page that kept it, this one is no longer looking at what
+                // it was looking at.
+                division.spilled.append(page)
+            }
+        }
+        return division
     }
 
     static func apply(
@@ -23,23 +66,9 @@ enum OriginalsWriter {
         makeBackup: Bool,
         sharedRatio: AspectRatio? = nil
     ) throws -> Result {
-        let candidates = pages.filter {
-            $0.crop != nil || $0.rotation != 0 || $0.quad != nil || $0.tilt != 0
-        }
-
-        // A file that appears twice in the document cannot be rewritten: the
-        // two copies are framed differently and only one of them would fit.
-        var seen: [SourceRef: Int] = [:]
-        for page in pages { seen[page.source, default: 0] += 1 }
-        let duplicated = Set(seen.filter { $0.value > 1 }.keys)
-
-        let edited = candidates.filter { !duplicated.contains($0.source) }
-        var conflicts = Array(Set(candidates.filter { duplicated.contains($0.source) }
-            .map(\.source.displayName))).sorted()
-
-        guard !edited.isEmpty else {
-            return Result(failures: conflicts)
-        }
+        let division = divide(pages)
+        let edited = division.applied
+        guard !edited.isEmpty || !division.spilled.isEmpty else { return Result() }
 
         var backupFolder: URL?
         if makeBackup {
@@ -48,14 +77,45 @@ enum OriginalsWriter {
             backupFolder = url
         }
 
-        var result = Result(failures: conflicts, backupFolder: backupFolder)
-        conflicts = []
+        var result = Result(backupFolder: backupFolder)
+
+        // The copies are made first, because they read the originals: one made
+        // afterwards would read a file that already carries somebody else's
+        // crop and bake a second one on top of it.
+        var taken = Set(pages.map(\.source.file))
+            .union((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+        // A file whose copy could not be written must not be rewritten either,
+        // or the framing that copy was meant to keep goes with it.
+        var blocked: Set<String> = []
+
+        for page in division.spilled {
+            let url = folder.appendingPathComponent(page.source.file)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                result.failures.append(page.source.file)
+                blocked.insert(page.source.file)
+                continue
+            }
+            let name = freeName(basedOn: page.source.file, avoiding: taken)
+            do {
+                result.newSources[page.id] = try writeCopy(
+                    of: page, from: url, named: name, in: folder, sharedRatio: sharedRatio
+                )
+                taken.insert(name)
+                result.createdFiles.append(name)
+                result.appliedPageIDs.insert(page.id)
+            } catch {
+                result.failures.append(page.source.file)
+                blocked.insert(page.source.file)
+            }
+        }
+
         // Group by file: a multi-page PDF must be rewritten once, not once
         // per page.
         let byFile = Dictionary(grouping: edited) { $0.source.file }
 
         for (file, filePages) in byFile.sorted(by: { $0.key < $1.key }) {
             let url = folder.appendingPathComponent(file)
+            guard !blocked.contains(file) else { continue }
             guard FileManager.default.fileExists(atPath: url.path) else {
                 result.failures.append(file)
                 continue
@@ -86,6 +146,104 @@ enum OriginalsWriter {
         }
 
         return result
+    }
+
+    // MARK: - Copies for pages that share a scan
+
+    /// A name beside the original rather than anywhere else: `scan.jpg`
+    /// becomes `scan-2.jpg`, and keeps counting until the folder has nothing
+    /// by that name. The copy is the same scan framed differently, so it
+    /// belongs next to it in a listing.
+    static func freeName(basedOn file: String, avoiding taken: Set<String>) -> String {
+        let name = file as NSString
+        let ext = name.pathExtension
+        let base = name.deletingPathExtension
+        var index = 2
+        while true {
+            let candidate = ext.isEmpty ? "\(base)-\(index)" : "\(base)-\(index).\(ext)"
+            if !taken.contains(candidate) { return candidate }
+            index += 1
+        }
+    }
+
+    /// Gives one page a file of its own, holding the scan as that page frames
+    /// it, and answers with where the page should point from now on.
+    private static func writeCopy(
+        of page: Page,
+        from url: URL,
+        named name: String,
+        in folder: URL,
+        sharedRatio: AspectRatio?
+    ) throws -> SourceRef {
+        let destination = folder.appendingPathComponent(name)
+
+        if url.pathExtension.lowercased() == "pdf" {
+            try writePDFCopy(
+                of: page, from: url, to: destination, in: folder, sharedRatio: sharedRatio
+            )
+            // One page, and it is the first one.
+            return SourceRef(file: name, pdfPage: 0)
+        }
+
+        // Nothing framed on this one: it only needs a file of its own because
+        // the file it shared is about to change, and a plain copy is a truer
+        // original than anything re-encoded.
+        guard isEdited(page) else {
+            try FileManager.default.copyItem(at: url, to: destination)
+            return SourceRef(file: name)
+        }
+
+        guard let type = ImageWriter.contentType(forExtension: url.pathExtension),
+              let content = PageRenderer.content(
+                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+              ),
+              case .image(let image) = content
+        else { throw ImageWriter.WriteError.unsupportedFormat(url.lastPathComponent) }
+
+        try ImageWriter.write(image, to: destination, type: type, inheritingMetadataFrom: url)
+        return SourceRef(file: name)
+    }
+
+    /// The shared PDF page as this page frames it, as a PDF of its own — the
+    /// rest of the file is somebody else's and stays where it is.
+    private static func writePDFCopy(
+        of page: Page,
+        from url: URL,
+        to destination: URL,
+        in folder: URL,
+        sharedRatio: AspectRatio?
+    ) throws {
+        guard let document = PDFDocument(url: url),
+              let original = document.page(at: page.source.pdfPage ?? 0)
+        else { throw ImageWriter.WriteError.unsupportedFormat(url.lastPathComponent) }
+
+        let copy = PDFDocument()
+        // The document a replacement page came out of still owns its content,
+        // so it has to outlive the write.
+        var sources: [PDFDocument] = []
+
+        if page.quad != nil || page.tilt != 0 {
+            guard let rasterized = rasterizedPage(
+                for: page, in: folder, replacing: original, sharedRatio: sharedRatio
+            ), let replacement = rasterized.page(at: 0) else {
+                throw ImageWriter.WriteError.encodingFailed(url.lastPathComponent)
+            }
+            sources.append(rasterized)
+            // The corrected pixels already carry the crop and both turns.
+            copy.insert(replacement, at: 0)
+        } else {
+            guard let vector = original.copy() as? PDFPage else {
+                throw ImageWriter.WriteError.unsupportedFormat(url.lastPathComponent)
+            }
+            narrow(vector, to: page)
+            copy.insert(vector, at: 0)
+        }
+
+        try withExtendedLifetime(sources) {
+            guard copy.write(to: destination) else {
+                throw ImageWriter.WriteError.encodingFailed(destination.lastPathComponent)
+            }
+        }
     }
 
     // MARK: - Images
@@ -152,23 +310,7 @@ enum OriginalsWriter {
                 continue
             }
 
-            let box = pdfPage.bounds(for: .cropBox)
-            if let crop = page.crop, box.width > 0, box.height > 0 {
-                // The stored crop is relative to the page as displayed, so it
-                // has to be turned back into the page's own coordinates, and
-                // flipped because PDF y grows upwards.
-                let inPageSpace = CropGeometry.rotated(crop, by: -pdfPage.rotation)
-                let newBox = CGRect(
-                    x: box.minX + inPageSpace.x * box.width,
-                    y: box.minY + box.height - (inPageSpace.y + inPageSpace.height) * box.height,
-                    width: inPageSpace.width * box.width,
-                    height: inPageSpace.height * box.height
-                )
-                pdfPage.setBounds(newBox, for: .cropBox)
-            }
-            if page.rotation != 0 {
-                pdfPage.rotation = pdfPage.rotation + page.rotation
-            }
+            narrow(pdfPage, to: page)
         }
 
         try withExtendedLifetime(sources) {
@@ -177,6 +319,28 @@ enum OriginalsWriter {
                     throw ImageWriter.WriteError.encodingFailed(url.lastPathComponent)
                 }
             }
+        }
+    }
+
+    /// Narrows a PDF page's crop box to what the page is framed on and turns
+    /// it — the whole of a crop, for a page that stays vector.
+    private static func narrow(_ pdfPage: PDFPage, to page: Page) {
+        let box = pdfPage.bounds(for: .cropBox)
+        if let crop = page.crop, box.width > 0, box.height > 0 {
+            // The stored crop is relative to the page as displayed, so it has
+            // to be turned back into the page's own coordinates, and flipped
+            // because PDF y grows upwards.
+            let inPageSpace = CropGeometry.rotated(crop, by: -pdfPage.rotation)
+            let newBox = CGRect(
+                x: box.minX + inPageSpace.x * box.width,
+                y: box.minY + box.height - (inPageSpace.y + inPageSpace.height) * box.height,
+                width: inPageSpace.width * box.width,
+                height: inPageSpace.height * box.height
+            )
+            pdfPage.setBounds(newBox, for: .cropBox)
+        }
+        if page.rotation != 0 {
+            pdfPage.rotation = pdfPage.rotation + page.rotation
         }
     }
 

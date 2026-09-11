@@ -15,6 +15,9 @@ struct PageEditorView: View {
     let onClose: () -> Void
 
     @State private var preview: CGImage?
+    /// Which pieces of guidance have already been said, kept where every window
+    /// reads the same answer.
+    @AppStorage(EditorHint.storageKey) private var readHints = ""
 
     private var index: Int? {
         guard let pageID else { return nil }
@@ -73,7 +76,7 @@ struct PageEditorView: View {
                 Label("Rotate Left", systemImage: "rotate.left").labelStyle(.iconOnly)
             }
             .keyboardShortcut("[", modifiers: .command)
-            .help("Rotate left (⌘[)")
+            .help("Rotate left (⌘L or ⌘[)")
 
             Button {
                 if let page { store.rotatePage(id: page.id, by: 90) }
@@ -81,7 +84,7 @@ struct PageEditorView: View {
                 Label("Rotate Right", systemImage: "rotate.right").labelStyle(.iconOnly)
             }
             .keyboardShortcut("]", modifiers: .command)
-            .help("Rotate right (⌘])")
+            .help("Rotate right (⌘R or ⌘])")
 
             Divider().frame(height: 20)
 
@@ -130,6 +133,12 @@ struct PageEditorView: View {
                 Button("Duplicate Page") {
                     if let page { store.duplicatePage(id: page.id) }
                 }
+
+                Divider()
+
+                Button("Show Hints Again") { readHints = "" }
+                    .disabled(readHints.isEmpty)
+                    .help("Bring back the guidance shown under a page")
             } label: {
                 Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
             }
@@ -330,32 +339,63 @@ struct PageEditorView: View {
         }
     }
 
-    /// One line of guidance for whichever gesture this page is waiting for.
+    /// One line of guidance for whichever gesture this page is waiting for —
+    /// until it has been read, which it only needs to be once.
+    ///
+    /// Nothing here answers to the pointer but the close button: the capsule
+    /// stands over the middle of the bottom edge of the page, and a crop drawn
+    /// from there must reach the canvas rather than the advice about drawing it.
     @ViewBuilder
     private var hint: some View {
         if let advice {
-            Label(advice.text, systemImage: advice.icon)
-                .font(.callout)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(.regularMaterial, in: Capsule())
-                .padding(.bottom, 16)
-                .allowsHitTesting(false)
+            HStack(spacing: 8) {
+                Label(advice.text, systemImage: advice.icon)
+                    .allowsHitTesting(false)
+
+                Button {
+                    markRead(advice)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Hide this hint for good")
+            }
+            .font(.callout)
+            .padding(.leading, 14)
+            .padding(.trailing, 10)
+            .padding(.vertical, 8)
+            .background { Capsule().fill(.regularMaterial).allowsHitTesting(false) }
+            .padding(.bottom, 16)
+            .transition(.opacity)
+            // Long enough to be read, and then gone: guidance that returns on
+            // every page is noise by the third one. It goes quiet on its own so
+            // that dismissing it is not one more thing to do; *Show Hints
+            // Again* is how it comes back.
+            .task(id: advice) {
+                try? await Task.sleep(for: .seconds(8))
+                guard !Task.isCancelled else { return }
+                markRead(advice)
+            }
         }
     }
 
-    private var advice: (text: String, icon: String)? {
+    private var advice: EditorHint? {
         guard let page, preview != nil else { return nil }
-        if isStraightened {
-            return ("Drag each corner onto the document's own corners", "skew")
+        let hint: EditorHint = if isStraightened {
+            .straighten
+        } else if page.crop == nil {
+            .drawCrop
+        } else {
+            .perspective
         }
-        if page.crop == nil {
-            return (
-                "Drag on the page to crop this page — one format for all of them is in the toolbar",
-                "hand.draw"
-            )
+        return EditorHint.read(from: readHints).contains(hint) ? nil : hint
+    }
+
+    private func markRead(_ hint: EditorHint) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            readHints = EditorHint.marking(hint, readIn: readHints)
         }
-        return ("Hold ⌘ while dragging a corner to correct perspective", "command")
     }
 
     private func loadPreview() async {

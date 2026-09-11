@@ -133,6 +133,13 @@ struct ContentView: View {
 
     private func appliedMessage(_ result: OriginalsWriter.Result) -> String {
         var text = "\(result.changedFiles.count) file(s) rewritten with the crop applied."
+        if !result.createdFiles.isEmpty {
+            // Said out loud: the folder has files in it that nobody asked for
+            // by name, and they are there because two pages were framed on
+            // one scan.
+            text += "\n\nPages sharing a scan were given files of their own: "
+                + result.createdFiles.joined(separator: ", ")
+        }
         if result.backupFolder != nil {
             text += "\n\nUntouched copies are in \(OriginalsWriter.backupFolderName)."
         }

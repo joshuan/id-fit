@@ -103,11 +103,9 @@ import UniformTypeIdentifiers
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("cover.png").path))
     }
 
-    @Test func aDuplicatedScanIsNotRewrittenInPlace() async throws {
+    @Test func aDuplicatedScanIsGivenASecondFileOfItsOwn() async throws {
         let folder = try makeFolder(files: ["cover.png", "zz-other.png"])
         defer { try? FileManager.default.removeItem(at: folder) }
-        let coverURL = folder.appendingPathComponent("cover.png")
-        let untouched = try Data(contentsOf: coverURL)
 
         let store = DocumentStore()
         await store.openFolder(folder)
@@ -118,11 +116,12 @@ import UniformTypeIdentifiers
             pages: store.state.pages, folder: folder, makeBackup: false
         )
 
-        // Two different framings cannot both be baked into one file, so the
-        // file is left alone and reported rather than silently losing one.
-        #expect(result.failures.contains("cover.png"))
-        #expect(!result.changedFiles.contains("cover.png"))
-        #expect(try Data(contentsOf: coverURL) == untouched)
+        // Two framings cannot both be baked into one file, so the second page
+        // is given a file rather than losing what it was framed on.
+        #expect(result.failures.isEmpty)
+        #expect(result.changedFiles.contains("cover.png"))
+        #expect(result.createdFiles == ["cover-2.png"])
+        #expect(result.newSources[store.state.pages[1].id] == SourceRef(file: "cover-2.png"))
         // The page that is not duplicated is still applied.
         #expect(result.changedFiles.contains("zz-other.png"))
     }

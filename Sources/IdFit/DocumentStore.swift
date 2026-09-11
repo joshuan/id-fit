@@ -270,6 +270,61 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    /// Sends the files behind these pages to the Trash and drops every page
+    /// standing on them.
+    ///
+    /// Deleting is asked for, like exporting and applying are, and then done
+    /// without a second question: the Trash *is* the confirmation. Finder
+    /// answers ⌘⌫ the same way, and a scan that was not meant to go is still
+    /// sitting there to be put back.
+    ///
+    /// What goes is a file, so everything resting on it goes too — both halves
+    /// of a duplicated scan, and every page of a named PDF. A page left
+    /// pointing at a trashed file would only come back as missing, which is a
+    /// worse answer than the one that was asked for.
+    @discardableResult
+    func moveToTrash(pageIDs ids: [UUID]) -> Int {
+        guard let folderURL, !ids.isEmpty else { return 0 }
+        let wanted = Set(ids)
+        let files = Set(state.pages.filter { wanted.contains($0.id) }.map(\.source.file))
+        guard !files.isEmpty else { return 0 }
+
+        var trashed: Set<String> = []
+        var failures: [String] = []
+        for file in files.sorted() {
+            let url = folderURL.appendingPathComponent(file)
+            do {
+                try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+                trashed.insert(file)
+            } catch {
+                // A file that is not there any more has arrived where it was
+                // being sent — a page whose file went missing while the folder
+                // was open deletes rather than complaining.
+                if FileManager.default.fileExists(atPath: url.path) {
+                    failures.append(file)
+                } else {
+                    trashed.insert(file)
+                }
+            }
+        }
+
+        let removed = state.pages.filter { trashed.contains($0.source.file) }
+        if !removed.isEmpty {
+            state.pages.removeAll { trashed.contains($0.source.file) }
+            for page in removed {
+                detectedQuads[page.id] = nil
+                sourceSizes[page.source] = nil
+                missingSources.remove(page.source)
+            }
+            scheduleSave()
+        }
+
+        if !failures.isEmpty {
+            lastError = "Could not move to the Trash: \(failures.joined(separator: ", "))"
+        }
+        return removed.count
+    }
+
     func removeMissingPages() {
         let before = state.pages.count
         state.pages.removeAll { missingSources.contains($0.source) }
@@ -347,19 +402,25 @@ final class DocumentStore {
             guard let index = state.pages.firstIndex(where: { $0.id == entry.id }) else { continue }
             let sourceSize = sourceSizes[state.pages[index].source]
 
-            // Only warp a document that is actually askew: nudging an
-            // already-square scan through a resample gains nothing.
-            let straightening = state.straightenByDefault
-                && entry.detection.quad.skew > PerspectiveCorrector.negligibleSkew
-
             // A page that is not photographed from an angle but simply lying
             // askew is offered the turn that puts it upright, and framed by
-            // the document rather than by the box around it. Corners being
-            // taken instead already say the angle, and a page carrying both
-            // would be turned twice.
-            let proposal = straightening ? nil : sourceSize.flatMap {
+            // the document rather than by the box around it.
+            //
+            // Asked before straightening, not after: the two describe the same
+            // rectangle — a quad subsumes a tilt — but a sheet that only needs
+            // turning is turned with one slider instead of four corners, and
+            // with straightening on for every document the angle would
+            // otherwise never be offered again. What no single turn can put
+            // right still goes to the corners.
+            let proposal = sourceSize.flatMap {
                 DocumentEdgeDetector.tiltProposal(for: entry.detection.quad, sourceSize: $0)
             }
+
+            // Only warp a document that is actually askew: nudging an
+            // already-square scan through a resample gains nothing.
+            let straightening = proposal == nil
+                && state.straightenByDefault
+                && entry.detection.quad.skew > PerspectiveCorrector.negligibleSkew
 
             // Detection measured the scan as it lies, so the only turn that
             // survives it is the one it proposed itself; a tilt left over from
@@ -864,6 +925,13 @@ final class DocumentStore {
             // same thing about a page that has already been pulled square, so
             // they go with it.
             for index in state.pages.indices where result.appliedPageIDs.contains(state.pages[index].id) {
+                // A page that shared a scan with another one was given a file
+                // of its own, and this is where it lives now — the document
+                // has to follow it, or both pages would point at one file
+                // again with a single framing between them.
+                if let source = result.newSources[state.pages[index].id] {
+                    state.pages[index].source = source
+                }
                 state.pages[index].crop = nil
                 state.pages[index].rotation = 0
                 state.pages[index].tilt = 0

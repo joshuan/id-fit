@@ -85,7 +85,7 @@ struct CropCanvas: View {
                     // picture is covered as exactly as an upright one.
                     DimmedArea(
                         area: pictureCorners(in: frame),
-                        hole: outline ?? cornerPoints(of: rect)
+                        hole: outline ?? DimmedArea.corners(of: rect)
                     )
                     .fill(.black.opacity(0.55), style: FillStyle(eoFill: true))
                     .frame(width: geometry.size.width, height: geometry.size.height)
@@ -372,22 +372,13 @@ struct CropCanvas: View {
     /// The picture's own four corners on the canvas — turned with the page, so
     /// the dimming follows it rather than the upright box it started in.
     private func pictureCorners(in frame: CGRect) -> [CGPoint] {
-        let corners = cornerPoints(of: frame)
+        let corners = DimmedArea.corners(of: frame)
         guard tilt != 0 else { return corners }
         let anchor = CGPoint(
             x: frame.minX + tiltAnchor.x * frame.width,
             y: frame.minY + tiltAnchor.y * frame.height
         )
         return corners.map { turned($0, about: anchor, by: tilt) }
-    }
-
-    private func cornerPoints(of rect: CGRect) -> [CGPoint] {
-        [
-            CGPoint(x: rect.minX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.minY),
-            CGPoint(x: rect.maxX, y: rect.maxY),
-            CGPoint(x: rect.minX, y: rect.maxY),
-        ]
     }
 
     private func viewPoint(_ point: CGPoint, in frame: CGRect) -> CGPoint {
@@ -463,23 +454,6 @@ struct CropCanvas: View {
         case .bottomLeft: CGPoint(x: rect.minX, y: rect.maxY)
         case .bottomRight: CGPoint(x: rect.maxX, y: rect.maxY)
         }
-    }
-}
-
-/// The picture with the framed part taken out of it, as one even-odd path.
-/// Both outlines are given in the canvas's own coordinates, which is why the
-/// rect the shape is handed is ignored.
-private struct DimmedArea: Shape {
-    let area: [CGPoint]
-    let hole: [CGPoint]
-
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.addLines(area)
-        path.closeSubpath()
-        path.addLines(hole)
-        path.closeSubpath()
-        return path
     }
 }
 

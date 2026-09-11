@@ -30,17 +30,12 @@ struct QuadCanvas: View {
                     .offset(x: frame.minX, y: frame.minY)
 
                 // Everything outside the document is dimmed, so the corners
-                // can be judged against the real edges.
-                Color.black.opacity(0.55)
-                    .frame(width: frame.width, height: frame.height)
-                    .offset(x: frame.minX, y: frame.minY)
-                    .reverseMask {
-                        QuadShape(points: points.map {
-                            CGPoint(x: $0.x - frame.minX, y: $0.y - frame.minY)
-                        })
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
-                    }
+                // can be judged against the real edges — one even-odd path,
+                // stated in the same coordinates as every other layer here,
+                // for the reason `DimmedArea` gives.
+                DimmedArea(area: DimmedArea.corners(of: frame), hole: points)
+                    .fill(.black.opacity(0.55), style: FillStyle(eoFill: true))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                     .allowsHitTesting(false)
 
                 QuadShape(points: points)

@@ -147,9 +147,12 @@ struct ProjectState: Codable, Equatable, Sendable {
     var exportedFiles: [String]
     /// Whether newly analysed pages are straightened.
     ///
-    /// Off by default: a locked rectangle is predictable, and a page that can
-    /// be pulled out of square without meaning to is worse than one that
-    /// needs an extra deliberate gesture to correct.
+    /// On by default: a document photographed at an angle is a trapezium on
+    /// the sensor, and the box around it holds the slivers of desk beside it.
+    /// Offering the corners is the answer that needs no undoing — the crop it
+    /// would otherwise propose has to be taken apart by hand before the page
+    /// can be squared up at all. Turning it off leaves every page taken as it
+    /// lies.
     var straightenByDefault: Bool
 
     init(
@@ -157,7 +160,7 @@ struct ProjectState: Codable, Equatable, Sendable {
         cropAspectRatio: AspectRatio? = nil,
         pages: [Page] = [],
         exportedFiles: [String] = [],
-        straightenByDefault: Bool = false
+        straightenByDefault: Bool = true
     ) {
         self.version = version
         self.cropAspectRatio = cropAspectRatio
@@ -172,8 +175,10 @@ struct ProjectState: Codable, Equatable, Sendable {
         self.cropAspectRatio = try container.decodeIfPresent(AspectRatio.self, forKey: .cropAspectRatio)
         self.pages = try container.decodeIfPresent([Page].self, forKey: .pages) ?? []
         self.exportedFiles = try container.decodeIfPresent([String].self, forKey: .exportedFiles) ?? []
+        // A document written before there was a choice to record never said
+        // no, so it is read the way a fresh folder is.
         self.straightenByDefault =
-            try container.decodeIfPresent(Bool.self, forKey: .straightenByDefault) ?? false
+            try container.decodeIfPresent(Bool.self, forKey: .straightenByDefault) ?? true
     }
 
     /// Merges the state with the sources currently present in the folder:

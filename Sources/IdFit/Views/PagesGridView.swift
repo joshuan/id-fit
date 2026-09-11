@@ -9,6 +9,8 @@ struct PagesGridView: View {
     @Binding var selectionAnchor: UUID?
     /// Opens a page in the editor.
     let onOpen: (UUID) -> Void
+    /// Sends these pages' files to the Trash.
+    let onTrash: ([UUID]) -> Void
 
     @State private var drag: DragState?
     @State private var cellFrames: [UUID: CGRect] = [:]
@@ -155,9 +157,13 @@ struct PagesGridView: View {
             Button("Move to Back") {
                 store.movePage(id: page.id, toIndex: store.state.pages.count - 1)
             }
+            Divider()
             if store.missingSources.contains(page.source) {
-                Divider()
+                // Nothing to send anywhere: the file is already gone, and this
+                // only forgets the page that was pointing at it.
                 Button("Remove Page", role: .destructive) { store.removePage(id: page.id) }
+            } else {
+                Button(trashTitle(for: page), role: .destructive) { onTrash(targets(for: page)) }
             }
         }
         .gesture(dragGesture(for: page))
@@ -177,6 +183,14 @@ struct PagesGridView: View {
 
     private func rotateTitle(_ base: String, page: Page) -> String {
         selectionApplies(to: page) ? "\(base) (\(selection.count) pages)" : base
+    }
+
+    /// Counted in files rather than pages: a scan two pages stand on leaves
+    /// with both of them, and one PDF holds however many pages it holds.
+    private func trashTitle(for page: Page) -> String {
+        let ids = Set(targets(for: page))
+        let files = Set(store.state.pages.filter { ids.contains($0.id) }.map(\.source.file))
+        return files.count > 1 ? "Move \(files.count) Files to Trash" : "Move File to Trash"
     }
 
     /// A plain click opens the page — that is what the grid is for. Holding

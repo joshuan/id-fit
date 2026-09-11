@@ -80,10 +80,53 @@ extension FocusedValues {
     }
 }
 
+/// What the Page menu can do to the pages of the frontmost window.
+///
+/// Rotating and deleting act on "this page", and only the window knows which
+/// that is — the one being framed, or the ones picked out in the grid. So the
+/// window hands the menu a way to ask rather than the menu reaching in.
+struct PageActions {
+    var hasTargets: Bool
+    /// Says how many files a delete would really take, since a scan standing
+    /// behind two pages leaves with both.
+    var trashTitle: String
+    var rotate: (Int) -> Void
+    var moveToTrash: () -> Void
+}
+
+struct FocusedPageActionsKey: FocusedValueKey {
+    typealias Value = PageActions
+}
+
+extension FocusedValues {
+    var pageActions: PageActions? {
+        get { self[FocusedPageActionsKey.self] }
+        set { self[FocusedPageActionsKey.self] = newValue }
+    }
+}
+
 struct DocumentCommands: Commands {
     @FocusedValue(\.documentStore) private var store
+    @FocusedValue(\.pageActions) private var pages
 
     var body: some Commands {
+        // A menu of its own rather than items in a toolbar menu: a key
+        // equivalent belongs in the menu bar, where macOS looks for it and
+        // where somebody can find out that it exists.
+        CommandMenu("Page") {
+            Button("Rotate Left") { pages?.rotate(-90) }
+                .keyboardShortcut("l", modifiers: .command)
+                .disabled(pages?.hasTargets != true)
+            Button("Rotate Right") { pages?.rotate(90) }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(pages?.hasTargets != true)
+            Divider()
+            Button(pages?.trashTitle ?? "Move File to Trash", role: .destructive) {
+                pages?.moveToTrash()
+            }
+            .keyboardShortcut(.delete, modifiers: .command)
+            .disabled(pages?.hasTargets != true)
+        }
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") {
                 Task { await UpdateController.shared.checkNow() }

@@ -42,13 +42,23 @@ struct WorkspaceView: View {
                     store: store,
                     selection: $selection,
                     selectionAnchor: $selectionAnchor,
-                    onOpen: { open($0) }
+                    onOpen: { open($0) },
+                    onTrash: { moveToTrash($0) }
                 )
                 .transition(.opacity)
             }
         }
         .navigationTitle(store.folderName)
         .toolbar { toolbarContent }
+        // What the Page menu acts on while this window is in front. Scene-
+        // scoped for the same reason the store is: a grid of pages may never
+        // give anything inside it keyboard focus.
+        .focusedSceneValue(\.pageActions, PageActions(
+            hasTargets: !actionTargets.isEmpty,
+            trashTitle: trashTitle,
+            rotate: { store.rotatePages(ids: actionTargets, by: $0) },
+            moveToTrash: { moveToTrash(actionTargets) }
+        ))
         .sheet(isPresented: $isEditingCustomRatio) {
             CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
                 store.setAspectRatio(ratio)
@@ -75,6 +85,48 @@ struct WorkspaceView: View {
 
     private func close() {
         withAnimation(.snappy(duration: 0.18)) { editingPageID = nil }
+    }
+
+    // MARK: - Acting on pages
+
+    /// What a keyboard shortcut means by "this page": the one being framed, or
+    /// the ones picked out in the grid.
+    private var actionTargets: [UUID] {
+        if let editedPage { return [editedPage] }
+        return store.state.pages.map(\.id).filter(selection.contains)
+    }
+
+    /// Names what will actually leave the folder — files, not pages, since a
+    /// scan standing behind two pages leaves with both of them.
+    private var trashTitle: String {
+        let targets = Set(actionTargets)
+        let files = Set(store.state.pages.filter { targets.contains($0.id) }.map(\.source.file))
+        return files.count > 1 ? "Move \(files.count) Files to Trash" : "Move File to Trash"
+    }
+
+    private func moveToTrash(_ ids: [UUID]) {
+        guard !ids.isEmpty else { return }
+        // Where the framed page sits now, so framing can carry on from the
+        // same place once it is gone.
+        let framedIndex = editedPage.flatMap { id in
+            store.state.pages.firstIndex { $0.id == id }
+        }
+        guard store.moveToTrash(pageIDs: ids) > 0 else { return }
+
+        let remaining = Set(store.state.pages.map(\.id))
+        selection.formIntersection(remaining)
+        if let anchor = selectionAnchor, !remaining.contains(anchor) { selectionAnchor = nil }
+
+        // Only when the page that was being framed is one of the ones that
+        // went: deleting from the grid leaves the editor closed.
+        guard let framedIndex, editedPage == nil else { return }
+        if store.state.pages.isEmpty {
+            close()
+        } else {
+            // The page that slid into its place, or the last one if it was at
+            // the end of the document.
+            editingPageID = store.state.pages[min(framedIndex, store.state.pages.count - 1)].id
+        }
     }
 
     @ToolbarContentBuilder
@@ -167,7 +219,11 @@ struct WorkspaceView: View {
         store.state.pages.filter { store.missingSources.contains($0.source) }.count
     }
 
+    /// Whether applying would do anything — asked of the writer, which counts
+    /// a fine turn and a set of corners as edits too, and knows that a page
+    /// sharing a scan has work to do even when it was never framed itself.
     private var hasEdits: Bool {
-        store.state.pages.contains { $0.crop != nil || $0.rotation != 0 }
+        let division = OriginalsWriter.divide(store.state.pages)
+        return !division.applied.isEmpty || !division.spilled.isEmpty
     }
 }
