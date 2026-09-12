@@ -24,6 +24,15 @@ struct CropRect: Codable, Equatable, Sendable {
     var width: Double
     var height: Double
 
+    /// Whether two crops describe the same rectangle, give or take the
+    /// rounding a trip through pixels and back leaves behind.
+    func isClose(to other: CropRect, tolerance: Double = 0.001) -> Bool {
+        abs(x - other.x) <= tolerance
+            && abs(y - other.y) <= tolerance
+            && abs(width - other.width) <= tolerance
+            && abs(height - other.height) <= tolerance
+    }
+
     /// Clamps the rect into the unit square, shrinking it only when it cannot
     /// fit by moving.
     func clampedToUnitSquare() -> CropRect {

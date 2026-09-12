@@ -537,10 +537,47 @@ final class DocumentStore {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].quad == nil else { return }
         let tilt = TiltGeometry.quantized(degrees)
-        guard state.pages[index].tilt != tilt else { return }
+        let before = state.pages[index]
+        guard before.tilt != tilt else { return }
         state.pages[index].tilt = tilt
-        refitTilt(pageAt: index)
+
+        // A page nobody has framed follows the slider: the frame is the
+        // largest upright rectangle the turn leaves inside the scan, so the
+        // page comes out square and whole at every angle instead of the user
+        // having to draw a rectangle that misses the corners. A framing that
+        // *was* chosen is never overruled — it only slides and shrinks as far
+        // as the turn demands.
+        if let size = sourceSizes[before.source], framingFollowsTilt(before, sourceSize: size) {
+            state.pages[index].crop = autoFrame(for: state.pages[index], sourceSize: size)
+        } else {
+            refitTilt(pageAt: index)
+        }
         scheduleSave()
+    }
+
+    /// Whether a page's crop is the app's own answer to its tilt rather than
+    /// a framing somebody chose. Asked of the tilt the page had *before* the
+    /// slider moved, which is the one its crop was made for.
+    private func framingFollowsTilt(_ page: Page, sourceSize: CGSize) -> Bool {
+        guard let crop = page.crop else { return true }
+        return crop.isClose(to: TiltGeometry.inscribed(
+            outputRatio: state.outputRatio(for: page),
+            rotation: page.rotation,
+            tilt: page.tilt,
+            sourceSize: sourceSize
+        ))
+    }
+
+    /// The frame a page gets for nothing. Nil when there is neither a turn nor
+    /// a common format to hold it to: a crop covering the whole scan says
+    /// exactly what no crop says, and no crop is what hands the page back its
+    /// draw gesture.
+    private func autoFrame(for page: Page, sourceSize: CGSize) -> CropRect? {
+        let ratio = state.outputRatio(for: page)
+        guard page.tilt != 0 || ratio != nil else { return nil }
+        return TiltGeometry.inscribed(
+            outputRatio: ratio, rotation: page.rotation, tilt: page.tilt, sourceSize: sourceSize
+        )
     }
 
     /// Keeps every crop within reach of its page's tilt.
@@ -554,8 +591,14 @@ final class DocumentStore {
 
     private func refitTilt(pageAt index: Int) {
         let page = state.pages[index]
-        guard page.tilt != 0, let crop = page.crop,
-              let size = sourceSizes[page.source] else { return }
+        guard page.tilt != 0, let size = sourceSizes[page.source] else { return }
+        guard let crop = page.crop else {
+            // A turned page is a framed page: without a frame the export would
+            // have to invent one anyway, and the editor would show a turned
+            // scan with nothing said about where it ends.
+            state.pages[index].crop = autoFrame(for: page, sourceSize: size)
+            return
+        }
         state.pages[index].crop = TiltGeometry.fitted(crop, tilt: page.tilt, sourceSize: size)
     }
 
@@ -727,6 +770,9 @@ final class DocumentStore {
         guard let target = state.outputRatio(for: state.pages[index]) else {
             guard state.pages[index].crop != nil else { return }
             state.pages[index].crop = nil
+            // A turned page has no "no crop" to go back to — the whole of it
+            // is the largest rectangle the turn leaves standing.
+            refitTilt(pageAt: index)
             scheduleSave()
             return
         }

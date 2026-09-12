@@ -162,6 +162,101 @@ enum TiltGeometry {
         return CropGeometry.cropRect(rect, sourceSize: sourceSize)
     }
 
+    /// The largest upright crop a turned page can still hold: the picture
+    /// without the wedges of nothing that the turn brings in at the corners.
+    ///
+    /// A w×h crop turned by θ reaches `w·cos + h·sin` across and
+    /// `w·sin + h·cos` down, so lying inside a W×H scan is two straight
+    /// conditions and the biggest crop is the largest `w·h` they allow.
+    ///
+    /// With a shape to keep, that is one number — the crop can only be scaled
+    /// until the tighter condition binds. Free to be whatever shape suits it,
+    /// the answer is where *both* conditions bind, which is why it meets the
+    /// turned page on all four sides instead of two; a document with no common
+    /// format is free in exactly that way.
+    static func inscribed(
+        outputRatio: Double?,
+        rotation: Int = 0,
+        tilt: Double,
+        sourceSize: CGSize
+    ) -> CropRect {
+        let whole = CropRect(x: 0, y: 0, width: 1, height: 1)
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return whole }
+
+        guard tilt != 0 else {
+            guard let outputRatio else { return whole }
+            return CropGeometry.centeredCrop(
+                outputRatio: outputRatio, sourceSize: sourceSize, rotation: rotation
+            )
+        }
+
+        let radians = abs(tilt) * .pi / 180
+        let cosine = cos(radians)
+        let sine = sin(radians)
+
+        let size: CGSize
+        if let outputRatio, outputRatio > 0 {
+            let aspect = CropGeometry.sourceAspect(outputRatio: outputRatio, rotation: rotation)
+            let height = min(
+                sourceSize.width / (aspect * cosine + sine),
+                sourceSize.height / (aspect * sine + cosine)
+            )
+            size = CGSize(width: aspect * height, height: height)
+        } else {
+            size = freestSize(cosine: cosine, sine: sine, in: sourceSize)
+        }
+
+        return CropGeometry.cropRect(
+            CGRect(
+                x: (sourceSize.width - size.width) / 2,
+                y: (sourceSize.height - size.height) / 2,
+                width: size.width,
+                height: size.height
+            ),
+            sourceSize: sourceSize
+        )
+    }
+
+    /// The largest rectangle of any shape the two conditions allow.
+    ///
+    /// Three rectangles can be the answer: the one where both conditions bind,
+    /// and — when that one turns out to have no width or no height, which is
+    /// what happens to a long page turned far — the best either condition
+    /// allows on its own. Whichever of them is real and biggest wins.
+    private static func freestSize(cosine: Double, sine: Double, in source: CGSize) -> CGSize {
+        var best = CGSize.zero
+        func consider(_ width: Double, _ height: Double) {
+            let slack = 1 + 1e-9
+            guard width > 0, height > 0,
+                  width * cosine + height * sine <= source.width * slack,
+                  width * sine + height * cosine <= source.height * slack
+            else { return }
+            if width * height > best.width * best.height {
+                best = CGSize(width: width, height: height)
+            }
+        }
+
+        let determinant = cosine * cosine - sine * sine
+        if abs(determinant) > 1e-9 {
+            consider(
+                (source.width * cosine - source.height * sine) / determinant,
+                (source.height * cosine - source.width * sine) / determinant
+            )
+        }
+        // Half of one side, spread across the turn: the largest `w·h` on a
+        // single condition puts half its reach into each term.
+        if sine > 0 {
+            consider(source.width / (2 * cosine), source.width / (2 * sine))
+            consider(source.height / (2 * sine), source.height / (2 * cosine))
+        }
+
+        guard best.width > 0, best.height > 0 else {
+            // Nothing fits, which only a degenerate source can mean.
+            return CGSize(width: source.width, height: source.height)
+        }
+        return best
+    }
+
     /// Moves the crop, stopping where the turned rectangle meets the source's
     /// edge rather than where the crop itself would.
     static func moved(
