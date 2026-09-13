@@ -14,7 +14,12 @@ struct WorkspaceView: View {
     @State private var selection: Set<UUID> = []
     @State private var selectionAnchor: UUID?
     @State private var isEditingCustomRatio = false
-    @State private var isConfirmingApply = false
+    @State private var applyRequest: ApplyRequest?
+
+    private struct ApplyRequest: Identifiable {
+        let id = UUID()
+        let pageIDs: Set<UUID>?
+    }
 
     /// The page being framed, if it is still part of the document — a page can
     /// disappear underneath the editor when its file turns out to be gone.
@@ -43,11 +48,13 @@ struct WorkspaceView: View {
                     selection: $selection,
                     selectionAnchor: $selectionAnchor,
                     onOpen: { open($0) },
-                    onTrash: { moveToTrash($0) }
+                    onTrash: { moveToTrash($0) },
+                    onApply: { confirmApply(pageIDs: $0) }
                 )
                 .transition(.opacity)
             }
         }
+        .disabled(store.isExporting || store.isLoading)
         .navigationTitle(store.folderName)
         .toolbar { toolbarContent }
         // What the Page menu acts on while this window is in front. Scene-
@@ -64,8 +71,8 @@ struct WorkspaceView: View {
                 store.setAspectRatio(ratio)
             }
         }
-        .sheet(isPresented: $isConfirmingApply) {
-            ApplyToOriginalsSheet(store: store)
+        .sheet(item: $applyRequest) { request in
+            ApplyToOriginalsSheet(store: store, pageIDs: request.pageIDs)
         }
         .sheet(isPresented: $store.isPresentingExport) {
             ExportSheet(store: store)
@@ -84,7 +91,15 @@ struct WorkspaceView: View {
     }
 
     private func close() {
+        if let editingPageID {
+            selection = [editingPageID]
+            selectionAnchor = editingPageID
+        }
         withAnimation(.snappy(duration: 0.18)) { editingPageID = nil }
+    }
+
+    private func confirmApply(pageIDs: Set<UUID>? = nil) {
+        applyRequest = ApplyRequest(pageIDs: pageIDs)
     }
 
     // MARK: - Acting on pages
@@ -149,7 +164,15 @@ struct WorkspaceView: View {
             .foregroundStyle(.secondary)
         }
         ToolbarItem {
+            Button("Auto-Straighten All", systemImage: "wand.and.rays") {
+                Task { await store.redetectEdgesOnAllPages() }
+            }
+            .disabled(store.state.pages.isEmpty || store.isDetectingEdges || store.isExporting || store.isLoading)
+            .help("Find edges and straighten all pages; review before applying to originals")
+        }
+        ToolbarItem {
             AspectRatioMenu(store: store, isEditingCustom: $isEditingCustomRatio)
+                .disabled(store.isExporting)
         }
         ToolbarItem {
             Button("Save", systemImage: "square.and.arrow.down") {
@@ -175,17 +198,13 @@ struct WorkspaceView: View {
                     .keyboardShortcut("a", modifiers: .command)
                     Divider()
                 }
-                Button("Detect Edges on All Pages") {
-                    Task { await store.redetectEdgesOnAllPages() }
-                }
-                .disabled(store.isDetectingEdges)
                 Toggle("Straighten Photographed Documents", isOn: Binding(
                     get: { store.state.straightenByDefault },
                     set: { store.setStraightenByDefault($0) }
                 ))
                 Divider()
                 Button("Apply Changes to Original Files…", role: .destructive) {
-                    isConfirmingApply = true
+                    confirmApply()
                 }
                 .disabled(!hasEdits)
             } label: {
@@ -197,6 +216,7 @@ struct WorkspaceView: View {
             Button("Open Folder…", systemImage: "folder") {
                 store.isPickingFolder = true
             }
+            .disabled(store.isExporting)
         }
     }
 

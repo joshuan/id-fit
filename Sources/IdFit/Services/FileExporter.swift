@@ -107,7 +107,7 @@ enum FileExporter {
         let sourceURL = folder.appendingPathComponent(page.source.file)
         let outputRatio = page.outputRatio(sharedRatio: sharedRatio)
 
-        if format == .jpeg {
+        if format == .jpeg || page.composition != nil {
             guard let image = PageRenderer.image(for: page, in: folder, outputRatio: outputRatio) else {
                 throw WriteFailure.unreadableSource
             }

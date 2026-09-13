@@ -4,6 +4,17 @@ import AppKit
 /// on the format: a PDF is one file, images are a folderful.
 @MainActor
 enum ExportPanel {
+    static func runSaveJPG(defaultName: String, directory: URL?) -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Save Combined JPG"
+        panel.allowedContentTypes = [.jpeg]
+        panel.nameFieldStringValue = defaultName
+        panel.canCreateDirectories = true
+        panel.directoryURL = directory
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
     static func runSave(
         defaultName: String,
         directory: URL?,

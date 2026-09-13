@@ -212,6 +212,147 @@ import UniformTypeIdentifiers
 
     // MARK: - PDFs
 
+    @Test func applyingASelectionLeavesOtherFilesAndEditsUntouched() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        for name in ["a.png", "b.png", "c.png"] {
+            writeSplitPNG(size: CGSize(width: 400, height: 600), to: folder.appendingPathComponent(name))
+        }
+        let untouched = try Data(contentsOf: folder.appendingPathComponent("b.png"))
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        for page in store.state.pages { store.setCrop(topHalf, forPageID: page.id) }
+        let pending = store.state.pages[1]
+        let ids: Set<UUID> = [store.state.pages[0].id, store.state.pages[2].id]
+
+        await store.applyToOriginals(pageIDs: ids, makeBackup: true)
+
+        #expect(store.lastError == nil)
+        #expect(try #require(store.lastApplyResult).appliedPageIDs == ids)
+        #expect(store.state.pages[1] == pending)
+        #expect(try Data(contentsOf: folder.appendingPathComponent("b.png")) == untouched)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".id-fit-originals/b.png").path))
+        for page in store.state.pages where ids.contains(page.id) {
+            #expect(!OriginalsWriter.isEdited(page))
+            #expect(store.sourceSizes[page.source] == CGSize(width: 400, height: 300))
+            #expect(isRed(try colour(of: folder.appendingPathComponent(page.source.file), atRelativeY: 0.5)))
+        }
+        #expect(try StateStore.load(from: folder)?.pages[1] == pending)
+    }
+
+    @Test func aSelectedDuplicateGetsACopyAndLeavesTheUnselectedPageAlone() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("scan.png")
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: file)
+        let original = try Data(contentsOf: file)
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let first = store.state.pages[0].id
+        store.duplicatePage(id: first)
+        let second = store.state.pages[1].id
+        store.setCrop(topHalf, forPageID: first)
+        store.setCrop(bottomHalf, forPageID: second)
+        let unselected = store.state.pages[1]
+
+        await store.applyToOriginals(pageIDs: [first], makeBackup: false)
+
+        #expect(store.lastError == nil)
+        #expect(store.state.pages[1] == unselected)
+        #expect(try Data(contentsOf: file) == original)
+        #expect(store.state.pages[0].source.file == "scan-2.png")
+        #expect(isRed(try colour(of: folder.appendingPathComponent("scan-2.png"), atRelativeY: 0.5)))
+        #expect(try #require(store.lastApplyResult).appliedPageIDs == [first])
+        #expect(!OriginalsWriter.isEdited(store.state.pages[0]))
+    }
+
+    @Test func selectingOnePDFPageDoesNotApplyOtherPagesPendingEdits() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("doc.pdf")
+        writeSplitPDF(size: CGSize(width: 400, height: 600), pages: 3, to: file)
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        for page in store.state.pages { store.setCrop(topHalf, forPageID: page.id) }
+        let before = store.state.pages
+        await store.applyToOriginals(pageIDs: [before[1].id], makeBackup: false)
+
+        #expect(store.lastError == nil)
+        #expect(store.state.pages[0] == before[0])
+        #expect(store.state.pages[2] == before[2])
+        let pdf = try #require(PDFDocument(url: file))
+        #expect(pdf.pageCount == 3)
+        for index in 0..<3 {
+            let box = try #require(pdf.page(at: index)).bounds(for: .cropBox)
+            #expect(box.size == CGSize(width: 400, height: index == 1 ? 300 : 600))
+        }
+    }
+
+    @Test func anEmptySelectionWritesNothing() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("scan.png")
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: file)
+        let original = try Data(contentsOf: file)
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        store.setCrop(topHalf, forPageID: store.state.pages[0].id)
+        let before = store.state
+        await store.applyToOriginals(pageIDs: [], makeBackup: true)
+        #expect(store.state == before)
+        #expect(store.lastApplyResult == nil)
+        #expect(try Data(contentsOf: file) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["scan.png"])
+    }
+
+    @Test func resetRemovesEveryEditAndSurvivesReopeningWithACommonFormat() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("scan.png")
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: file)
+        let original = try Data(contentsOf: file)
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let id = store.state.pages[0].id
+        store.setAspectRatio(AspectRatio(width: 1, height: 1))
+        store.rotatePage(id: id, by: 90)
+        store.setTilt(3, forPageID: id)
+        store.toggleStraightening(forPageID: id)
+        store.resetPage(forPageID: id)
+        #expect(!OriginalsWriter.isEdited(store.state.pages[0]))
+        #expect(store.state.outputRatio(for: store.state.pages[0]) == nil)
+        store.saveDocument()
+
+        let reopened = DocumentStore()
+        await reopened.openFolder(folder)
+        #expect(!OriginalsWriter.isEdited(reopened.state.pages[0]))
+        #expect(reopened.state.cropAspectRatio == AspectRatio(width: 1, height: 1))
+        await reopened.applyToOriginals(makeBackup: true)
+        #expect(reopened.lastApplyResult == nil)
+        #expect(try Data(contentsOf: file) == original)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(".id-fit-originals").path))
+    }
+
+    @Test func applyingAllKeepsAResetDuplicateOnItsUntouchedSource() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("scan.png")
+        writeSplitPNG(size: CGSize(width: 400, height: 600), to: file)
+        let original = try Data(contentsOf: file)
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let id = store.state.pages[0].id
+        store.duplicatePage(id: id)
+        store.setCrop(topHalf, forPageID: id)
+        store.resetPage(forPageID: store.state.pages[1].id)
+        let reset = store.state.pages[1]
+        await store.applyToOriginals(makeBackup: false)
+        #expect(store.state.pages[1] == reset)
+        #expect(try Data(contentsOf: file) == original)
+        #expect(store.state.pages[0].source.file == "scan-2.png")
+        #expect(isRed(try colour(of: folder.appendingPathComponent("scan-2.png"), atRelativeY: 0.5)))
+    }
+
     /// One page of a PDF claimed twice: the file keeps the first framing in
     /// its crop box and stays whole, and the second gets a PDF of its own.
     @Test func aPDFPageFramedTwiceGetsAPDFOfItsOwn() throws {

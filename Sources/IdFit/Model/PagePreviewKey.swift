@@ -10,10 +10,12 @@ import Foundation
 struct PagePreviewKey: Hashable {
     let source: SourceRef
     let rotation: Int
+    let sourceRevision: Int
 
-    init(_ page: Page) {
+    init(_ page: Page, sourceRevision: Int = 0) {
         self.source = page.source
         self.rotation = page.rotation
+        self.sourceRevision = sourceRevision
     }
 }
 
@@ -22,16 +24,22 @@ struct PagePreviewKey: Hashable {
 /// overlay.
 ///
 /// Unlike the editor's own preview this key does follow corner edits and the
-/// tilt: a cell shows the result those produce, so it has to be redrawn when
-/// they move. The cell waits for a drag to settle before acting on it.
+/// tilt, including its crop, and both composition regions. The live result
+/// redraws immediately; grid and filmstrip cells briefly debounce corner drags.
 struct PageThumbnailKey: Hashable {
     let preview: PagePreviewKey
     let quad: DocumentQuad?
     let tilt: Double
+    let tiltedCrop: CropRect?
+    let composition: TwoPartComposition?
+    let outputRatio: Double?
 
-    init(_ page: Page) {
-        self.preview = PagePreviewKey(page)
+    init(_ page: Page, outputRatio: Double? = nil, sourceRevision: Int = 0) {
+        self.preview = PagePreviewKey(page, sourceRevision: sourceRevision)
         self.quad = page.quad
         self.tilt = page.tilt
+        self.tiltedCrop = page.tilt == 0 ? nil : page.crop
+        self.composition = page.composition
+        self.outputRatio = outputRatio
     }
 }

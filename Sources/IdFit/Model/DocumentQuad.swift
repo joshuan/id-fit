@@ -16,6 +16,18 @@ struct DocumentQuad: Codable, Equatable, Hashable, Sendable {
 
     var corners: [CGPoint] { [topLeft, topRight, bottomRight, bottomLeft] }
 
+    /// Crossed or collapsed corners cannot describe a document surface.
+    var isConvex: Bool {
+        let points = corners
+        return points.indices.allSatisfy { index in
+            let a = points[index]
+            let b = points[(index + 1) % 4]
+            let c = points[(index + 2) % 4]
+            return a.x.isFinite && a.y.isFinite
+                && (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x) > 0.000001
+        }
+    }
+
     init(topLeft: CGPoint, topRight: CGPoint, bottomRight: CGPoint, bottomLeft: CGPoint) {
         self.topLeft = topLeft
         self.topRight = topRight

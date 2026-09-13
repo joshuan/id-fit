@@ -46,7 +46,8 @@ struct PageFilmstrip: View {
                 folder: store.folderURL!,
                 outputRatio: store.state.outputRatio(for: page),
                 isMissing: store.missingSources.contains(page.source),
-                layout: .filmstrip
+                layout: .filmstrip,
+                sourceRevision: store.sourceRevision
             )
             .frame(width: cellWidth)
             .overlay {

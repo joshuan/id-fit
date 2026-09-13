@@ -126,7 +126,7 @@ struct ContentView: View {
     private func exportMessage(url: URL, result: PDFExporter.Result) -> String {
         var text = "\(result.exportedPages) pages written to \(url.lastPathComponent)."
         if !result.skippedPages.isEmpty {
-            text += "\n\nSkipped (files missing): \(result.skippedPages.joined(separator: ", "))"
+            text += "\n\nSkipped (unreadable files or unfinished framing): \(result.skippedPages.joined(separator: ", "))"
         }
         return text
     }
@@ -137,7 +137,7 @@ struct ContentView: View {
             // Said out loud: the folder has files in it that nobody asked for
             // by name, and they are there because two pages were framed on
             // one scan.
-            text += "\n\nPages sharing a scan were given files of their own: "
+            text += "\n\nCreated separate files: "
                 + result.createdFiles.joined(separator: ", ")
         }
         if result.backupFolder != nil {

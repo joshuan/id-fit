@@ -36,20 +36,25 @@ struct PageEditorView: View {
 
     private var hasRatio: Bool { store.state.cropAspectRatio != nil }
     private var isStraightened: Bool { page?.quad != nil }
+    private var isTwoPart: Bool { page?.composition != nil }
 
     var body: some View {
         VStack(spacing: 0) {
             controlBar
             Divider()
+            if isTwoPart {
+                compositionBar
+                Divider()
+            }
             canvas
             Divider()
-            if page != nil, !isStraightened {
+            if page != nil, !isStraightened, !isTwoPart {
                 tiltBar
                 Divider()
             }
             PageFilmstrip(store: store, currentID: $pageID)
         }
-        .task(id: page.map(PagePreviewKey.init)) { await loadPreview() }
+        .task(id: page.map { PagePreviewKey($0, sourceRevision: store.sourceRevision) }) { await loadPreview() }
     }
 
     // MARK: - Controls
@@ -61,8 +66,7 @@ struct PageEditorView: View {
             } label: {
                 Label("All Pages", systemImage: "square.grid.2x2")
             }
-            .keyboardShortcut(.cancelAction)
-            .help("Back to all pages (Esc)")
+            .help("Back to all pages, keeping this page's edits")
 
             Divider().frame(height: 20)
 
@@ -95,21 +99,40 @@ struct PageEditorView: View {
                 Label("Straighten", systemImage: "skew")
             }
             .toggleStyle(.button)
+            .disabled(isTwoPart)
             .help("Map the document's four corners onto a true rectangle")
 
-            Button("Detect Edges", systemImage: "wand.and.rays") {
+            Button("Auto-Straighten", systemImage: "wand.and.rays") {
                 if let page {
                     Task { await store.redetectEdges(forPageIDs: [page.id]) }
                 }
             }
-            .disabled(store.isDetectingEdges)
+            .disabled(store.isDetectingEdges || isTwoPart)
             .help("Look for the document in this scan")
 
+            Button {
+                if let page { store.resetPage(forPageID: page.id) }
+            } label: {
+                Label("Reset Page", systemImage: "arrow.uturn.backward").labelStyle(.iconOnly)
+            }
+            .keyboardShortcut(.cancelAction)
+            .help("Clear this page's crop, straightening and rotation; keep the original untouched (Esc)")
+
             Menu {
+                Toggle("Combine Two Parts", isOn: Binding(
+                    get: { isTwoPart },
+                    set: { enabled in
+                        if let page { store.setTwoPartMode(enabled, forPageID: page.id) }
+                    }
+                ))
+                .help("Draw two regions in order; straighten each and combine them on white")
+
+                Divider()
+
                 Button("Reset Crop") {
                     if let page { store.resetCrop(forPageID: page.id) }
                 }
-                .disabled(isStraightened || (!hasRatio && page?.crop == nil))
+                .disabled(isTwoPart || isStraightened || (!hasRatio && page?.crop == nil))
 
                 Button("Apply This Framing to All Pages") {
                     if let page { store.applyCropToAllPages(fromPageID: page.id) }
@@ -125,7 +148,7 @@ struct PageEditorView: View {
                 Button(orientationButtonTitle) {
                     if let page { store.toggleCropOrientation(forPageID: page.id) }
                 }
-                .disabled(!hasRatio || isStraightened)
+                .disabled(isTwoPart || !hasRatio || isStraightened)
                 .help("Use the document's shape the other way round on this page")
 
                 Divider()
@@ -148,6 +171,48 @@ struct PageEditorView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .background(.bar)
+    }
+
+    private var compositionBar: some View {
+        HStack(spacing: 12) {
+            Label("Two Parts", systemImage: "rectangle.split.2x1")
+                .font(.callout.weight(.medium))
+            Picker("Arrangement", selection: Binding(
+                get: { page?.composition?.layout ?? .vertical },
+                set: { layout in if let page { store.setPartLayout(layout, forPageID: page.id) } }
+            )) {
+                ForEach(TwoPartComposition.Layout.allCases, id: \.self) { layout in
+                    Text(layout.title).tag(layout)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 190)
+
+            Text(compositionInstruction)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            Button("Redraw Parts") {
+                if let page { store.redrawParts(forPageID: page.id) }
+            }
+            Button("Save JPG…", systemImage: "square.and.arrow.down") {
+                if let page { Task { await store.runCombinedJPGExport(forPageID: page.id) } }
+            }
+            .disabled(page?.composition?.isComplete != true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private var compositionInstruction: String {
+        switch page?.composition?.regions.count ?? 0 {
+        case 0: "Draw the first part, then the second."
+        case 1: "Draw the second part. The first stays first."
+        default: "Adjust each part's corners. Order follows your selection."
+        }
     }
 
     private var pageStepper: some View {
@@ -278,10 +343,29 @@ struct PageEditorView: View {
                 endPoint: .bottom
             )
             content
+                .padding(.trailing, 176)
                 .padding(24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .bottom) { hint }
+        .overlay(alignment: .topTrailing) {
+            if let page, let folder = store.folderURL {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Result")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    PageCell(page: page, number: 0, folder: folder,
+                             outputRatio: store.state.outputRatio(for: page),
+                             isMissing: store.missingSources.contains(page.source), layout: .result,
+                             sourceRevision: store.sourceRevision)
+                }
+                .padding(10)
+                .frame(width: 170)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .padding(12)
+                .allowsHitTesting(false)
+            }
+        }
         .clipped()
         // The canvas is a dark surface whatever the system appearance, so
         // anything standing on it — the hint, a spinner, a missing-file
@@ -292,7 +376,19 @@ struct PageEditorView: View {
     @ViewBuilder
     private var content: some View {
         if let page, let size = displayedSize, let preview {
-            if let quad = page.quad {
+            if let composition = page.composition {
+                TwoPartCanvas(
+                    image: preview, displayedSize: size,
+                    regions: composition.regions.map { DocumentQuadGeometry.rotated($0, by: page.rotation) },
+                    onAdd: { region in
+                        store.addPart(DocumentQuadGeometry.rotated(region, by: -page.rotation), forPageID: page.id)
+                    },
+                    onChange: { index, region in
+                        store.setPart(DocumentQuadGeometry.rotated(region, by: -page.rotation), at: index, forPageID: page.id)
+                    }
+                )
+                .id(page.id)
+            } else if let quad = page.quad {
                 // Straightened: the four corners are what matters, and they
                 // need not form a rectangle.
                 QuadCanvas(
@@ -381,7 +477,7 @@ struct PageEditorView: View {
     }
 
     private var advice: EditorHint? {
-        guard let page, preview != nil else { return nil }
+        guard let page, preview != nil, !isTwoPart else { return nil }
         let hint: EditorHint = if isStraightened {
             .straighten
         } else if page.crop == nil {

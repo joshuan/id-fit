@@ -11,16 +11,17 @@ struct PagesGridView: View {
     let onOpen: (UUID) -> Void
     /// Sends these pages' files to the Trash.
     let onTrash: ([UUID]) -> Void
+    let onApply: (Set<UUID>) -> Void
 
     @State private var drag: DragState?
     @State private var cellFrames: [UUID: CGRect] = [:]
 
-    private static let boardSpace = "board"
+    nonisolated private static let boardSpace = "board"
     private let columns = [GridItem(.adaptive(minimum: 160, maximum: 240), spacing: 16)]
 
     var body: some View {
         VStack(spacing: 0) {
-            if selection.count > 1 {
+            if !selection.isEmpty {
                 selectionBar
                 Divider()
             }
@@ -46,31 +47,44 @@ struct PagesGridView: View {
         }
     }
 
-    /// Appears once more than one page is picked, so a batch of scans off by
-    /// the same quarter turn can be fixed in one go.
+    /// Every batch action uses the same selection, including a single page.
     private var selectionBar: some View {
-        HStack(spacing: 12) {
-            Text("\(selection.count) of \(store.state.pages.count) pages selected")
-                .font(.callout)
-                .monospacedDigit()
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text("\(selection.count) of \(store.state.pages.count) pages selected")
+                    .font(.callout)
+                    .monospacedDigit()
 
-            Button {
-                store.rotatePages(ids: orderedSelection, by: -90)
-            } label: {
-                Label("Rotate Left", systemImage: "rotate.left").labelStyle(.iconOnly)
+                Button {
+                    store.rotatePages(ids: orderedSelection, by: -90)
+                } label: {
+                    Label("Rotate Left", systemImage: "rotate.left").labelStyle(.iconOnly)
+                }
+                .help("Rotate left")
+                Button {
+                    store.rotatePages(ids: orderedSelection, by: 90)
+                } label: {
+                    Label("Rotate Right", systemImage: "rotate.right").labelStyle(.iconOnly)
+                }
+                .help("Rotate right")
+
+                Spacer()
+
+                Button("Select All") { selection = Set(store.state.pages.map(\.id)) }
+                Button("Deselect") { selection.removeAll() }
             }
-            .help("Rotate left")
-            Button {
-                store.rotatePages(ids: orderedSelection, by: 90)
-            } label: {
-                Label("Rotate Right", systemImage: "rotate.right").labelStyle(.iconOnly)
+            HStack(spacing: 12) {
+                Button("Auto-Straighten Selected", systemImage: "wand.and.rays") {
+                    let ids = orderedSelection
+                    Task { await store.redetectEdges(forPageIDs: ids) }
+                }
+                .disabled(store.isDetectingEdges)
+
+                Button("Apply Selected to Originals…", systemImage: "doc.badge.arrow.up") {
+                    onApply(selection)
+                }
+                .disabled(!canApply(selection))
             }
-            .help("Rotate right")
-
-            Spacer()
-
-            Button("Select All") { selection = Set(store.state.pages.map(\.id)) }
-            Button("Deselect") { selection.removeAll() }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -116,7 +130,8 @@ struct PagesGridView: View {
             number: index + 1,
             folder: store.folderURL!,
             outputRatio: store.state.outputRatio(for: page),
-            isMissing: store.missingSources.contains(page.source)
+            isMissing: store.missingSources.contains(page.source),
+            sourceRevision: store.sourceRevision
         )
         // The slot left behind stays visible as an outline, so it is obvious
         // where the page will land.
@@ -151,6 +166,16 @@ struct PagesGridView: View {
                 store.rotatePages(ids: targets(for: page), by: 90)
             }
             Divider()
+            Button(selectionApplies(to: page) ? "Auto-Straighten Selected" : "Auto-Straighten") {
+                let ids = targets(for: page)
+                Task { await store.redetectEdges(forPageIDs: ids) }
+            }
+            .disabled(store.isDetectingEdges || store.missingSources.contains(page.source))
+            Button(selectionApplies(to: page) ? "Apply Selected to Originals…" : "Apply to Original…") {
+                onApply(Set(targets(for: page)))
+            }
+            .disabled(!canApply(Set(targets(for: page))))
+            Divider()
             Button("Duplicate Page") { store.duplicatePage(id: page.id) }
             Divider()
             Button("Move to Front") { store.movePage(id: page.id, toIndex: 0) }
@@ -179,6 +204,11 @@ struct PagesGridView: View {
 
     private func selectionApplies(to page: Page) -> Bool {
         selection.count > 1 && selection.contains(page.id)
+    }
+
+    private func canApply(_ ids: Set<UUID>) -> Bool {
+        let division = OriginalsWriter.divide(store.state.pages, pageIDs: ids)
+        return !division.applied.isEmpty || !division.spilled.isEmpty
     }
 
     private func rotateTitle(_ base: String, page: Page) -> String {
@@ -221,7 +251,8 @@ struct PagesGridView: View {
                 number: index + 1,
                 folder: store.folderURL!,
                 outputRatio: store.state.outputRatio(for: store.state.pages[index]),
-                isMissing: store.missingSources.contains(store.state.pages[index].source)
+                isMissing: store.missingSources.contains(store.state.pages[index].source),
+                sourceRevision: store.sourceRevision
             )
             .frame(width: drag.size.width, height: drag.size.height)
             .scaleEffect(1.04)

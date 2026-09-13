@@ -25,7 +25,8 @@ enum OriginalsWriter {
 
     /// Whether a page asks anything of its file at all.
     static func isEdited(_ page: Page) -> Bool {
-        page.crop != nil || page.rotation != 0 || page.quad != nil || page.tilt != 0
+        if let composition = page.composition { return composition.isComplete }
+        return page.crop != nil || page.rotation != 0 || page.quad != nil || page.tilt != 0
     }
 
     /// How the pages divide when a scan is claimed more than once.
@@ -41,12 +42,32 @@ enum OriginalsWriter {
         var spilled: [Page] = []
     }
 
-    static func divide(_ pages: [Page]) -> Division {
+    static func divide(_ pages: [Page], pageIDs: Set<UUID>? = nil) -> Division {
+        let selected = pageIDs ?? Set(pages.map(\.id))
+        // Unselected pages keep both their source and their pending edits.
+        // A selected framing sharing their source gets its own file instead.
+        // A page explicitly reset with Esc also keeps its untouched source.
+        let reserved = Set(pages.filter {
+            !selected.contains($0.id) || ($0.ignoresSharedRatio && !isEdited($0))
+                || $0.composition?.isComplete == false
+        }.map(\.source))
         var keeper: [SourceRef: Page] = [:]
-        for page in pages where keeper[page.source] == nil { keeper[page.source] = page }
+        for page in pages where selected.contains(page.id) && page.composition == nil && keeper[page.source] == nil {
+            keeper[page.source] = page
+        }
 
         var division = Division()
-        for page in pages {
+        for page in pages where selected.contains(page.id) {
+            if let composition = page.composition {
+                // A composition becomes a JPG beside the scan, which remains
+                // available if the user wants to draw the two parts again.
+                if composition.isComplete { division.spilled.append(page) }
+                continue
+            }
+            if reserved.contains(page.source) {
+                if isEdited(page) { division.spilled.append(page) }
+                continue
+            }
             guard let owner = keeper[page.source] else { continue }
             if owner.id == page.id {
                 if isEdited(page) { division.applied.append(page) }
@@ -64,14 +85,15 @@ enum OriginalsWriter {
         pages: [Page],
         folder: URL,
         makeBackup: Bool,
-        sharedRatio: AspectRatio? = nil
+        sharedRatio: AspectRatio? = nil,
+        pageIDs: Set<UUID>? = nil
     ) throws -> Result {
-        let division = divide(pages)
+        let division = divide(pages, pageIDs: pageIDs)
         let edited = division.applied
         guard !edited.isEmpty || !division.spilled.isEmpty else { return Result() }
 
         var backupFolder: URL?
-        if makeBackup {
+        if makeBackup && !edited.isEmpty {
             let url = folder.appendingPathComponent(backupFolderName, isDirectory: true)
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
             backupFolder = url
@@ -95,7 +117,15 @@ enum OriginalsWriter {
                 blocked.insert(page.source.file)
                 continue
             }
-            let name = freeName(basedOn: page.source.file, avoiding: taken)
+            let name: String
+            if page.composition != nil {
+                let stem = (page.source.file as NSString).deletingPathExtension
+                let pageSuffix = page.source.pdfPage.map { "-p\($0 + 1)" } ?? ""
+                let proposed = "\(stem)\(pageSuffix)-parts.jpg"
+                name = taken.contains(proposed) ? freeName(basedOn: proposed, avoiding: taken) : proposed
+            } else {
+                name = freeName(basedOn: page.source.file, avoiding: taken)
+            }
             do {
                 result.newSources[page.id] = try writeCopy(
                     of: page, from: url, named: name, in: folder, sharedRatio: sharedRatio
@@ -176,6 +206,14 @@ enum OriginalsWriter {
         sharedRatio: AspectRatio?
     ) throws -> SourceRef {
         let destination = folder.appendingPathComponent(name)
+
+        if page.composition != nil {
+            guard let image = PageRenderer.image(for: page, in: folder, outputRatio: nil) else {
+                throw ImageWriter.WriteError.encodingFailed(name)
+            }
+            try ImageWriter.write(image, to: destination, type: .jpeg, inheritingMetadataFrom: url)
+            return SourceRef(file: name)
+        }
 
         if url.pathExtension.lowercased() == "pdf" {
             try writePDFCopy(

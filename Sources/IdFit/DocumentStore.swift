@@ -14,6 +14,7 @@ final class DocumentStore {
     /// Displayed pixel size of every readable source, prefetched on open so
     /// that crop math stays synchronous.
     private(set) var sourceSizes: [SourceRef: CGSize] = [:]
+    private(set) var sourceRevision = 0
     private(set) var isLoading = false
     private(set) var lastError: String?
     private(set) var hasUnsavedChanges = false
@@ -79,9 +80,11 @@ final class DocumentStore {
     @ObservationIgnored private var openTask: Task<Void, Never>?
 
     private func performOpen(_ url: URL) async {
+        guard !isExporting else { return }
         // Work that was never saved would go with the folder being left, so
         // ask before leaving it.
         guard confirmDiscardingChanges() else { return }
+        cancelDetection()
         saveImmediately()
         isLoading = true
         defer { isLoading = false }
@@ -99,10 +102,11 @@ final class DocumentStore {
             let reconciled = loaded.reconciled(with: discovered)
             folderURL = url
             state = reconciled
+            sourceRevision += 1
+            detectedQuads.removeAll()
             missingSources = reconciled.missingSources(given: discovered)
             hasDocument = StateStore.existingStateFile(in: url) != nil
-            // A folder opened for the first time holds pages, an aspect ratio
-            // and soon a set of detected crops, none of which is on disk yet —
+            // A folder opened for the first time holds pages, none of which is on disk yet —
             // which is exactly what "unsaved" means.
             hasUnsavedChanges = !hasDocument
             rememberFolder(url)
@@ -113,13 +117,6 @@ final class DocumentStore {
                 }
                 return sizes
             }.value
-            // Decide before normalizing: normalizing hands every page a
-            // centered crop, which would hide the pages that still need a
-            // suggestion.
-            let needingDetection = state.pages
-                .filter { !$0.autoDetected && $0.crop == nil }
-                .map(\.id)
-
             state.version = ProjectState.currentVersion
             alignOrientationsWithCorners()
             normalizeCropsToSharedRatio()
@@ -131,11 +128,6 @@ final class DocumentStore {
             // keep its dotfile forever for want of an unrelated edit.
             if hasDocument, state != loaded || StateStore.usesLegacyDocument(in: url) {
                 try StateStore.save(state, to: url)
-            }
-
-            detectionTask?.cancel()
-            detectionTask = Task { [weak self] in
-                await self?.detectEdges(forPageIDs: needingDetection)
             }
         } catch {
             // A corrupt state file must never be silently overwritten — the
@@ -336,12 +328,23 @@ final class DocumentStore {
     // MARK: - Edge detection
 
     private(set) var isDetectingEdges = false
-    @ObservationIgnored private var detectionTask: Task<Void, Never>?
+    private typealias EdgeDetection = (id: UUID, detection: DocumentEdgeDetector.Detection)
+    @ObservationIgnored private var detectionTask: Task<[EdgeDetection], Never>?
+    @ObservationIgnored private var detectionID: UUID?
+    @ObservationIgnored private var dismissedDetections: Set<UUID> = []
+
+    private func cancelDetection() {
+        detectionTask?.cancel()
+        detectionTask = nil
+        detectionID = nil
+        isDetectingEdges = false
+    }
 
     /// Re-runs detection for pages the user asks about, ignoring whether they
     /// were analysed before.
     func redetectEdges(forPageIDs ids: [UUID]) async {
-        detectionTask?.cancel()
+        guard !isLoading, !isExporting else { return }
+        cancelDetection()
         await detectEdges(forPageIDs: ids)
     }
 
@@ -351,16 +354,24 @@ final class DocumentStore {
 
     private func detectEdges(forPageIDs ids: [UUID]) async {
         guard let folderURL, !ids.isEmpty else { return }
+        let runID = UUID()
+        detectionID = runID
+        dismissedDetections.removeAll()
         isDetectingEdges = true
-        defer { isDetectingEdges = false }
+        defer {
+            if detectionID == runID { cancelDetection() }
+        }
 
-        let targets = state.pages.filter { ids.contains($0.id) }
-        // Remember what each crop looked like: anything the user changes while
+        let selected = Set(ids)
+        let targets = state.pages.filter {
+            selected.contains($0.id) && $0.composition == nil && !missingSources.contains($0.source)
+        }
+        // Remember the whole page: anything the user changes while
         // detection is running must win over the suggestion.
-        let before = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0.crop) })
+        let before = Dictionary(uniqueKeysWithValues: targets.map { ($0.id, $0) })
 
-        let detections = await Task.detached(priority: .utility) {
-            var found: [(id: UUID, detection: DocumentEdgeDetector.Detection)] = []
+        let task = Task.detached(priority: .utility) {
+            var found: [EdgeDetection] = []
             for page in targets {
                 if Task.isCancelled { break }
                 if let detection = DocumentEdgeDetector.detect(for: page.source, in: folderURL) {
@@ -368,29 +379,35 @@ final class DocumentStore {
                 }
             }
             return found
-        }.value
+        }
+        detectionTask = task
+        let detections = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, detectionID == runID, self.folderURL == folderURL else { return }
         apply(detections, replacingUnchanged: before)
     }
 
     private func apply(
         _ detections: [(id: UUID, detection: DocumentEdgeDetector.Detection)],
-        replacingUnchanged before: [UUID: CropRect?]
+        replacingUnchanged before: [UUID: Page]
     ) {
+        let unchanged = Set(state.pages.filter {
+            before[$0.id] == $0 && !dismissedDetections.contains($0.id)
+        }.map(\.id))
+        guard !unchanged.isEmpty else { return }
         // Every page that was looked at counts as offered, found or not.
-        for index in state.pages.indices where before.keys.contains(state.pages[index].id) {
+        for index in state.pages.indices where unchanged.contains(state.pages[index].id) {
             state.pages[index].autoDetected = true
         }
 
         // Work out which suggestions are still welcome before touching any
         // crops: a page framed by hand while detection was running keeps the
         // framing it was given.
-        let welcome = detections.filter { detection in
-            guard let page = state.pages.first(where: { $0.id == detection.id }),
-                  let snapshot = before[detection.id] else { return false }
-            return page.crop == snapshot
-        }
+        let welcome = detections.filter { unchanged.contains($0.id) }
 
         // Keep the corners even if straightening is off right now, so the
         // switch can be flipped later without analysing everything again.
@@ -400,6 +417,7 @@ final class DocumentStore {
 
         for entry in welcome {
             guard let index = state.pages.firstIndex(where: { $0.id == entry.id }) else { continue }
+            state.pages[index].ignoresSharedRatio = false
             let sourceSize = sourceSizes[state.pages[index].source]
 
             // A page that is not photographed from an angle but simply lying
@@ -483,6 +501,7 @@ final class DocumentStore {
         }
 
         for index in state.pages.indices {
+            state.pages[index].ignoresSharedRatio = false
             let page = state.pages[index]
             guard let size = sourceSizes[page.source],
                   let target = state.outputRatio(for: page) else { continue }
@@ -785,6 +804,19 @@ final class DocumentStore {
         scheduleSave()
     }
 
+    /// Rejects all framing for this page, including a result still being computed.
+    /// The common format must not put a crop back on it when the folder reopens.
+    func resetPage(forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }) else { return }
+        dismissedDetections.insert(id)
+        detectedQuads[id] = nil
+        let page = state.pages[index]
+        let reset = Page(id: page.id, source: page.source, autoDetected: true, ignoresSharedRatio: true)
+        guard page != reset else { return }
+        state.pages[index] = reset
+        scheduleSave()
+    }
+
     /// Copies one page's framing onto every page — handy when scans are
     /// aligned the same way. With a common format each page is refitted to it,
     /// so sources of different pixel sizes still export uniformly; without one
@@ -795,6 +827,8 @@ final class DocumentStore {
             // The page the framing came from is already framed as asked;
             // running it through the fit again could only nudge it.
             guard state.pages[index].id != id else { continue }
+            guard state.pages[index].composition == nil else { continue }
+            state.pages[index].ignoresSharedRatio = false
             guard let target = state.outputRatio(for: state.pages[index]) else {
                 // Nothing to fit it to: the same region of the scan is as
                 // close to the same framing as this can get.
@@ -807,6 +841,56 @@ final class DocumentStore {
             )
         }
         refitTilts()
+        scheduleSave()
+    }
+
+    // MARK: - Two-part pages
+
+    func setTwoPartMode(_ enabled: Bool, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              (state.pages[index].composition != nil) != enabled else { return }
+        let page = state.pages[index]
+        dismissedDetections.insert(id)
+        detectedQuads[id] = nil
+        state.pages[index] = Page(
+            id: id, source: page.source, rotation: page.rotation, autoDetected: true,
+            ignoresSharedRatio: true, composition: enabled ? TwoPartComposition() : nil
+        )
+        scheduleSave()
+    }
+
+    func addPart(_ region: DocumentQuad, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let composition = state.pages[index].composition,
+              composition.regions.count < 2 else { return }
+        let region = region.clampedToUnitSquare()
+        guard region.isConvex else { return }
+        state.pages[index].composition?.regions.append(region)
+        scheduleSave()
+    }
+
+    func setPart(_ region: DocumentQuad, at part: Int, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let composition = state.pages[index].composition,
+              composition.regions.indices.contains(part) else { return }
+        let region = region.clampedToUnitSquare()
+        guard region.isConvex, composition.regions[part] != region else { return }
+        state.pages[index].composition?.regions[part] = region
+        scheduleSave()
+    }
+
+    func setPartLayout(_ layout: TwoPartComposition.Layout, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              state.pages[index].composition != nil,
+              state.pages[index].composition?.layout != layout else { return }
+        state.pages[index].composition?.layout = layout
+        scheduleSave()
+    }
+
+    func redrawParts(forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              state.pages[index].composition != nil else { return }
+        state.pages[index].composition?.regions.removeAll()
         scheduleSave()
     }
 
@@ -868,6 +952,47 @@ final class DocumentStore {
                 exportedPages: result.writtenFiles.count,
                 skippedPages: result.skippedPages
             ))
+        } catch {
+            lastError = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    func runCombinedJPGExport(forPageID id: UUID) async {
+        guard let folderURL,
+              let page = state.pages.first(where: { $0.id == id }),
+              page.composition?.isComplete == true else { return }
+        let stem = (page.source.file as NSString).deletingPathExtension
+        guard let destination = ExportPanel.runSaveJPG(defaultName: "\(stem)-parts.jpg", directory: folderURL)
+        else { return }
+        await exportCombinedJPG(forPageID: id, to: destination)
+    }
+
+    func exportCombinedJPG(forPageID id: UUID, to destination: URL) async {
+        guard let folderURL, !isExporting,
+              let page = state.pages.first(where: { $0.id == id }),
+              page.composition?.isComplete == true else { return }
+        // Export cannot silently replace a source another page is still using.
+        let target = destination.standardizedFileURL.resolvingSymlinksInPath()
+        guard !state.pages.contains(where: {
+            folderURL.appendingPathComponent($0.source.file).standardizedFileURL.resolvingSymlinksInPath() == target
+        }) else {
+            lastError = "Choose a new JPG filename to keep the source scan intact."
+            return
+        }
+        isExporting = true
+        defer { isExporting = false }
+        lastError = nil
+        lastExport = nil
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                guard let image = PageRenderer.image(for: page, in: folderURL, outputRatio: nil) else {
+                    throw ImageWriter.WriteError.encodingFailed(page.source.file)
+                }
+                try ImageWriter.write(image, to: destination, type: .jpeg,
+                                      inheritingMetadataFrom: folderURL.appendingPathComponent(page.source.file))
+            }.value
+            rememberExportInsideFolder(destination)
+            lastExport = (destination, PDFExporter.Result(exportedPages: 1, skippedPages: []))
         } catch {
             lastError = "Export failed: \(error.localizedDescription)"
         }
@@ -950,8 +1075,11 @@ final class DocumentStore {
     /// The single destructive action in the app: rewrites the source files
     /// with their crops and rotations baked in. Only ever called after an
     /// explicit confirmation.
-    func applyToOriginals(makeBackup: Bool) async {
-        guard let folderURL else { return }
+    func applyToOriginals(pageIDs: Set<UUID>? = nil, makeBackup: Bool) async {
+        guard let folderURL, !isLoading, !isExporting else { return }
+        let division = OriginalsWriter.divide(state.pages, pageIDs: pageIDs)
+        guard !division.applied.isEmpty || !division.spilled.isEmpty else { return }
+        cancelDetection()
         isExporting = true
         defer { isExporting = false }
         lastError = nil
@@ -962,7 +1090,7 @@ final class DocumentStore {
             let result = try await Task.detached(priority: .userInitiated) {
                 try OriginalsWriter.apply(
                     pages: pages, folder: folderURL,
-                    makeBackup: makeBackup, sharedRatio: ratio
+                    makeBackup: makeBackup, sharedRatio: ratio, pageIDs: pageIDs
                 )
             }.value
 
@@ -982,11 +1110,23 @@ final class DocumentStore {
                 state.pages[index].rotation = 0
                 state.pages[index].tilt = 0
                 state.pages[index].quad = nil
+                state.pages[index].composition = nil
+                state.pages[index].ignoresSharedRatio = true
+                detectedQuads[state.pages[index].id] = nil
+            }
+
+            let retained = pages.filter { previous in
+                previous.composition != nil && result.newSources[previous.id] != nil
+                    && !state.pages.contains(where: { current in current.source == previous.source })
+            }.map(\.source)
+            for source in retained where !state.retainedSources.contains(source) {
+                state.retainedSources.append(source)
             }
 
             ThumbnailProvider.shared.invalidate()
             SourceGeometry.shared.invalidate()
             await reloadSourceSizes()
+            sourceRevision += 1
             hasUnsavedChanges = true
             // Also written without being asked: the source files now carry
             // their crops, and a folder that does not record that would offer
@@ -998,7 +1138,7 @@ final class DocumentStore {
             }
             // A run that rewrote nothing has nothing to announce: saying
             // "changes applied" over a count of zero reads as success.
-            if !result.changedFiles.isEmpty { lastApplyResult = result }
+            if !result.changedFiles.isEmpty || !result.createdFiles.isEmpty { lastApplyResult = result }
         } catch {
             lastError = "Could not apply changes: \(error.localizedDescription)"
         }

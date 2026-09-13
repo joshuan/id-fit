@@ -127,7 +127,7 @@ import UniformTypeIdentifiers
     /// Detection proposes a crop per page and nothing document-wide: the shape
     /// of the first scan analysed says nothing about the shape of the next.
     @MainActor
-    @Test func openingAFolderProposesACropShapedLikeEachPagesOwnDocument() async throws {
+    @Test func explicitDetectionProposesACropShapedLikeEachPagesOwnDocument() async throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         // One tall document, one wide one.
@@ -138,7 +138,9 @@ import UniformTypeIdentifiers
 
         let store = DocumentStore()
         await store.openFolder(folder)
-        // Detection runs in the background once the folder is open.
+        #expect(!store.isDetectingEdges)
+        #expect(store.state.pages.allSatisfy { !$0.autoDetected && !OriginalsWriter.isEdited($0) })
+        // Suggestions start only when the user requests them.
         await store.redetectEdgesOnAllPages()
 
         #expect(store.state.cropAspectRatio == nil)
@@ -282,7 +284,7 @@ import UniformTypeIdentifiers
         await store.redetectEdges(forPageIDs: [page.id])
         #expect(store.state.pages[0].crop != nil)
 
-        // But the automatic pass on reopening leaves it alone.
+        // Reopening leaves it alone.
         store.saveDocument()
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
@@ -317,7 +319,7 @@ import UniformTypeIdentifiers
     }
 
     @MainActor
-    @Test func aScanAddedLaterGetsItsOwnSuggestion() async throws {
+    @Test func aScanAddedLaterWaitsForExplicitDetection() async throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         writePNG(Self.scanImage(document: CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.7)),
@@ -335,11 +337,79 @@ import UniformTypeIdentifiers
         await reopened.openFolder(folder)
         let late = try #require(reopened.state.pages.first { $0.source.file == "b.png" })
         #expect(!late.autoDetected)
+        #expect(!reopened.isDetectingEdges)
+        #expect(!OriginalsWriter.isEdited(late))
 
         await reopened.redetectEdges(forPageIDs: [late.id])
         let updated = try #require(reopened.state.pages.first { $0.source.file == "b.png" })
         #expect(updated.autoDetected)
         #expect(updated.crop != nil)
+    }
+
+    @MainActor
+    @Test func openingAFolderDoesNotDetectOrWriteAnything() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("a.png")
+        writePNG(Self.scanImage(document: CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.7)), to: file)
+        let original = try Data(contentsOf: file)
+
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let pages = store.state.pages
+        // Allow a stray background task a chance to start.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!store.isDetectingEdges)
+        #expect(store.state.pages == pages)
+        #expect(pages.allSatisfy { !$0.autoDetected && !OriginalsWriter.isEdited($0) })
+        #expect(try Data(contentsOf: file) == original)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path) == ["a.png"])
+    }
+
+    @MainActor
+    @Test func detectionOnlyChangesTheSelectedPages() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = Self.scanImage(document: CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.7))
+        for name in ["a.png", "b.png", "c.png"] { writePNG(image, to: folder.appendingPathComponent(name)) }
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let pages = store.state.pages
+        store.setTilt(2, forPageID: pages[1].id)
+        let unselected = store.state.pages[1]
+
+        await store.redetectEdges(forPageIDs: [pages[0].id, pages[2].id])
+
+        #expect(store.state.pages[0].crop != nil)
+        #expect(store.state.pages[2].crop != nil)
+        #expect(store.state.pages[0].autoDetected)
+        #expect(store.state.pages[2].autoDetected)
+        #expect(store.state.pages[1] == unselected)
+    }
+
+    @MainActor
+    @Test func resetRejectsAnInFlightDetectionForOnlyThatPage() async throws {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let image = Self.scanImage(document: CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.7))
+        for name in ["a.png", "b.png"] { writePNG(image, to: folder.appendingPathComponent(name)) }
+        let store = DocumentStore()
+        await store.openFolder(folder)
+        let id = store.state.pages[0].id
+        let task = Task { await store.redetectEdgesOnAllPages() }
+        await Task.yield()
+        #expect(store.isDetectingEdges)
+        store.resetPage(forPageID: id)
+        await task.value
+
+        #expect(!OriginalsWriter.isEdited(store.state.pages[0]))
+        #expect(store.state.pages[1].crop != nil)
+        // Cached corners must be gone too.
+        store.setStraightenByDefault(true)
+        #expect(store.state.pages[0].quad == nil)
+        // A fresh explicit request is still allowed.
+        await store.redetectEdges(forPageIDs: [id])
+        #expect(store.state.pages[0].crop != nil)
     }
 
     @Test func oldStateFilesWithoutTheFlagStillLoad() throws {

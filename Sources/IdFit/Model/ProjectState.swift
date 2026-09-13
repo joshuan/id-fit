@@ -18,7 +18,7 @@ struct SourceRef: Hashable, Codable, Sendable {
 /// Normalized crop rectangle: all values are fractions of the source
 /// width/height (0...1), so the crop survives copies of the same scan with a
 /// different resolution or DPI.
-struct CropRect: Codable, Equatable, Sendable {
+struct CropRect: Codable, Equatable, Hashable, Sendable {
     var x: Double
     var y: Double
     var width: Double
@@ -58,10 +58,13 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// Clockwise degrees: 0, 90, 180 or 270.
     var rotation: Int
     var crop: CropRect?
-    /// Whether edge detection has already been offered for this page. Kept so
-    /// that a deliberate "no crop" is not undone by re-detecting on every
-    /// open, while a scan added later still gets its suggestion.
+    /// Whether edge detection has already been requested or dismissed for this page.
     var autoDetected: Bool
+    /// A reset page stays outside the common format until framing is explicitly
+    /// requested again. Reopening must not restore a crop the user rejected.
+    var ignoresSharedRatio: Bool
+    /// Opt-in, per-page composition. Nil is the ordinary single-region editor.
+    var composition: TwoPartComposition?
     /// Turns the document's aspect ratio on its side for this page.
     ///
     /// A passport photographed partly upright and partly sideways cannot be
@@ -87,7 +90,9 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         autoDetected: Bool = false,
         transposedRatio: Bool = false,
         quad: DocumentQuad? = nil,
-        tilt: Double = 0
+        tilt: Double = 0,
+        ignoresSharedRatio: Bool = false,
+        composition: TwoPartComposition? = nil
     ) {
         self.id = id
         self.source = source
@@ -97,12 +102,14 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.transposedRatio = transposedRatio
         self.quad = quad
         self.tilt = tilt
+        self.ignoresSharedRatio = ignoresSharedRatio
+        self.composition = composition
     }
 
     // Spelled out because writing both halves of Codable by hand stops the
     // compiler from working them out.
     private enum CodingKeys: String, CodingKey {
-        case id, source, rotation, crop, autoDetected, transposedRatio, quad, tilt
+        case id, source, rotation, crop, autoDetected, transposedRatio, quad, tilt, ignoresSharedRatio, composition
     }
 
     init(from decoder: Decoder) throws {
@@ -115,6 +122,8 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.transposedRatio = try container.decodeIfPresent(Bool.self, forKey: .transposedRatio) ?? false
         self.quad = try container.decodeIfPresent(DocumentQuad.self, forKey: .quad)
         self.tilt = try container.decodeIfPresent(Double.self, forKey: .tilt) ?? 0
+        self.ignoresSharedRatio = try container.decodeIfPresent(Bool.self, forKey: .ignoresSharedRatio) ?? false
+        self.composition = try container.decodeIfPresent(TwoPartComposition.self, forKey: .composition)
     }
 
     /// Written by hand only so that an untilted page — which is nearly every
@@ -129,13 +138,15 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         try container.encode(transposedRatio, forKey: .transposedRatio)
         try container.encodeIfPresent(quad, forKey: .quad)
         if tilt != 0 { try container.encode(tilt, forKey: .tilt) }
+        if ignoresSharedRatio { try container.encode(true, forKey: .ignoresSharedRatio) }
+        try container.encodeIfPresent(composition, forKey: .composition)
     }
 }
 
 extension Page {
     /// The document's shape as this page must hold it.
     func outputRatio(sharedRatio: AspectRatio?) -> Double? {
-        guard let ratio = sharedRatio?.ratio, ratio > 0 else { return nil }
+        guard composition == nil, !ignoresSharedRatio, let ratio = sharedRatio?.ratio, ratio > 0 else { return nil }
         return transposedRatio ? 1 / ratio : ratio
     }
 }
@@ -154,6 +165,9 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// skipped when scanning, so an export saved next to the scans does not
     /// come back as a stack of new pages.
     var exportedFiles: [String]
+    /// Sources kept on disk after a page was replaced by its combined JPG.
+    /// They must not reappear as new pages when the folder is scanned again.
+    var retainedSources: [SourceRef]
     /// Whether newly analysed pages are straightened.
     ///
     /// On by default: a document photographed at an angle is a trapezium on
@@ -169,13 +183,15 @@ struct ProjectState: Codable, Equatable, Sendable {
         cropAspectRatio: AspectRatio? = nil,
         pages: [Page] = [],
         exportedFiles: [String] = [],
-        straightenByDefault: Bool = true
+        straightenByDefault: Bool = true,
+        retainedSources: [SourceRef] = []
     ) {
         self.version = version
         self.cropAspectRatio = cropAspectRatio
         self.pages = pages
         self.exportedFiles = exportedFiles
         self.straightenByDefault = straightenByDefault
+        self.retainedSources = retainedSources
     }
 
     init(from decoder: Decoder) throws {
@@ -184,6 +200,7 @@ struct ProjectState: Codable, Equatable, Sendable {
         self.cropAspectRatio = try container.decodeIfPresent(AspectRatio.self, forKey: .cropAspectRatio)
         self.pages = try container.decodeIfPresent([Page].self, forKey: .pages) ?? []
         self.exportedFiles = try container.decodeIfPresent([String].self, forKey: .exportedFiles) ?? []
+        self.retainedSources = try container.decodeIfPresent([SourceRef].self, forKey: .retainedSources) ?? []
         // A document written before there was a choice to record never said
         // no, so it is read the way a fresh folder is.
         self.straightenByDefault =
@@ -196,6 +213,7 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// is currently absent, so edits survive a partially-synced folder.
     func reconciled(with discovered: [SourceRef]) -> ProjectState {
         let known = Set(pages.map(\.source))
+            .union(retainedSources)
         var result = self
         for ref in discovered where !known.contains(ref) {
             result.pages.append(Page(source: ref))

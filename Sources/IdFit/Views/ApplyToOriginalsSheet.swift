@@ -3,6 +3,7 @@ import SwiftUI
 /// Confirmation for the only action that touches the user's source files.
 struct ApplyToOriginalsSheet: View {
     let store: DocumentStore
+    var pageIDs: Set<UUID>? = nil
 
     @Environment(\.dismiss) private var dismiss
     @State private var makeBackup = true
@@ -10,24 +11,25 @@ struct ApplyToOriginalsSheet: View {
     /// Asked of the writer rather than worked out here, so the numbers in this
     /// sheet are the ones the run will actually produce.
     private var division: OriginalsWriter.Division {
-        OriginalsWriter.divide(store.state.pages)
+        OriginalsWriter.divide(store.state.pages, pageIDs: pageIDs)
     }
 
-    private var editedCount: Int { division.applied.count }
+    private var editedCount: Int { Set(division.applied.map(\.source.file)).count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Apply Changes to Original Files", systemImage: "exclamationmark.triangle.fill")
+            Label(pageIDs == nil ? "Apply Changes to Original Files" : "Apply Selected Pages to Originals",
+                  systemImage: "exclamationmark.triangle.fill")
                 .font(.headline)
                 .foregroundStyle(.orange)
 
-            Text("\(editedCount) source file(s) in “\(store.folderName)” will be rewritten with their crop applied. This cannot be undone from inside the app.")
+            Text("\(editedCount) source file(s) in “\(store.folderName)” will be rewritten with their edits applied. This cannot be undone from inside the app.")
                 .fixedSize(horizontal: false, vertical: true)
 
             // Said before it happens: the folder is about to gain files
             // nobody named, and the reason is worth one sentence.
             if !division.spilled.isEmpty {
-                Text("\(division.spilled.count) page(s) share a scan with another page. One file cannot hold two framings, so each of them is given a copy of its own next to the scan it came from.")
+                Text("\(division.spilled.count) page(s) will get separate files with their edits applied. Two-part pages become JPG files on white. Shared scans are kept for unselected pages and their pending edits.")
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -36,7 +38,9 @@ struct ApplyToOriginalsSheet: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Toggle("Keep untouched copies in \(OriginalsWriter.backupFolderName)", isOn: $makeBackup)
+            if editedCount > 0 {
+                Toggle("Keep untouched copies in \(OriginalsWriter.backupFolderName)", isOn: $makeBackup)
+            }
 
             HStack {
                 Spacer()
@@ -44,7 +48,8 @@ struct ApplyToOriginalsSheet: View {
                 Button("Apply") {
                     let backup = makeBackup
                     dismiss()
-                    Task { await store.applyToOriginals(makeBackup: backup) }
+                    let ids = pageIDs
+                    Task { await store.applyToOriginals(pageIDs: ids, makeBackup: backup) }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(editedCount == 0 && division.spilled.isEmpty)
