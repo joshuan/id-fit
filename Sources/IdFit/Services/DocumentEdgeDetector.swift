@@ -47,7 +47,7 @@ enum DocumentEdgeDetector {
         rectangles.quadratureTolerance = 25
         let rectangleHandler = VNImageRequestHandler(cgImage: image, options: [:])
         if (try? rectangleHandler.perform([rectangles])) != nil {
-            let regions = separateRegions(from: (rectangles.results ?? []).map { quad(from: $0) })
+            let regions = separateRegions(from: (rectangles.results ?? []).map { Self.quad(from: $0) })
             if regions.count > 1 {
                 return Detection(quad: regions[0], crop: regions[0].boundingCrop, regions: regions)
             }
@@ -64,7 +64,7 @@ enum DocumentEdgeDetector {
         guard let observation = request.results?.first,
               observation.confidence >= minimumConfidence else { return nil }
 
-        let quad = quad(from: observation)
+        let quad = Self.quad(from: observation)
         let crop = quad.boundingCrop
         guard isUseful(crop) else { return nil }
         return Detection(quad: quad, crop: crop)
