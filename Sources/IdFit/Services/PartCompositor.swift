@@ -1,10 +1,12 @@
 import CoreGraphics
 import Foundation
 
-enum TwoPartCompositor {
+enum PartCompositor {
+    static let gap = 2
+
     /// Rectify independently, then place at native resolution on an opaque
-    /// white canvas. The first part goes above or to the left of the second.
-    static func render(_ source: CGImage, composition: TwoPartComposition, rotation: Int) -> CGImage? {
+    /// white canvas, in the chosen order from top to bottom or left to right.
+    static func render(_ source: CGImage, composition: PartComposition, rotation: Int) -> CGImage? {
         guard composition.isComplete else { return nil }
         let sourceSize = CGSize(width: source.width, height: source.height)
         var parts: [CGImage] = []
@@ -16,10 +18,11 @@ enum TwoPartCompositor {
             parts.append(PageRenderer.rotate(corrected, by: rotation))
         }
 
-        let gap = max(1, Int((Double(parts.map { max($0.width, $0.height) }.max()!) * 0.025).rounded()))
+        let margin = max(1, Int((Double(parts.map { max($0.width, $0.height) }.max()!) * 0.025).rounded()))
         let vertical = composition.layout == .vertical
-        let width = (vertical ? parts.map(\.width).max()! : parts.map(\.width).reduce(0, +) + gap) + 2 * gap
-        let height = (vertical ? parts.map(\.height).reduce(0, +) + gap : parts.map(\.height).max()!) + 2 * gap
+        let gaps = gap * (parts.count - 1)
+        let width = (vertical ? parts.map(\.width).max()! : parts.map(\.width).reduce(0, +) + gaps) + 2 * margin
+        let height = (vertical ? parts.map(\.height).reduce(0, +) + gaps : parts.map(\.height).max()!) + 2 * margin
         guard let context = CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
             space: CGColorSpace(name: CGColorSpace.sRGB)!,
@@ -27,7 +30,7 @@ enum TwoPartCompositor {
         ) else { return nil }
         context.setFillColor(CGColor(gray: 1, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
-        var offset = gap
+        var offset = margin
         for part in parts {
             let x = vertical ? (width - part.width) / 2 : offset
             let y = vertical ? height - offset - part.height : (height - part.height) / 2

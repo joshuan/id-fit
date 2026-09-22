@@ -92,6 +92,10 @@ struct PageActions {
     var trashTitle: String
     var rotate: (Int) -> Void
     var moveToTrash: () -> Void
+    var partCount: Int?
+    var setPartCount: (Int) -> Void
+    var canCycleParts: Bool
+    var cyclePartOrder: () -> Void
 }
 
 struct FocusedPageActionsKey: FocusedValueKey {
@@ -114,6 +118,18 @@ struct DocumentCommands: Commands {
         // equivalent belongs in the menu bar, where macOS looks for it and
         // where somebody can find out that it exists.
         CommandMenu("Page") {
+            ForEach(1...4, id: \.self) { count in
+                Toggle(count == 1 ? "1 Part" : "\(count) Parts", isOn: Binding(
+                    get: { pages?.partCount == count },
+                    set: { _ in pages?.setPartCount(count) }
+                ))
+                .keyboardShortcut(KeyEquivalent(Character(String(count))), modifiers: [])
+                .disabled(pages?.partCount == nil)
+            }
+            Button("Cycle Part Order") { pages?.cyclePartOrder() }
+                .keyboardShortcut("c", modifiers: [])
+                .disabled(pages?.canCycleParts != true)
+            Divider()
             Button("Rotate Left") { pages?.rotate(-90) }
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(pages?.hasTargets != true)

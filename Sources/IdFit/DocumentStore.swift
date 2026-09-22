@@ -364,7 +364,7 @@ final class DocumentStore {
 
         let selected = Set(ids)
         let targets = state.pages.filter {
-            selected.contains($0.id) && $0.composition == nil && !missingSources.contains($0.source)
+            selected.contains($0.id) && !missingSources.contains($0.source)
         }
         // Remember the whole page: anything the user changes while
         // detection is running must win over the suggestion.
@@ -417,6 +417,20 @@ final class DocumentStore {
 
         for entry in welcome {
             guard let index = state.pages.firstIndex(where: { $0.id == entry.id }) else { continue }
+            if entry.detection.regions.count > 1 {
+                let page = state.pages[index]
+                let regions = entry.detection.regions
+                state.pages[index] = Page(
+                    id: page.id, source: page.source, rotation: page.rotation, autoDetected: true,
+                    ignoresSharedRatio: true,
+                    composition: PartComposition(regions: regions,
+                                                 layout: page.composition?.layout ?? .vertical,
+                                                 partCount: regions.count)
+                )
+                detectedQuads[entry.id] = nil
+                continue
+            }
+            state.pages[index].composition = nil
             state.pages[index].ignoresSharedRatio = false
             let sourceSize = sourceSizes[state.pages[index].source]
 
@@ -844,25 +858,37 @@ final class DocumentStore {
         scheduleSave()
     }
 
-    // MARK: - Two-part pages
+    // MARK: - Composed pages
 
-    func setTwoPartMode(_ enabled: Bool, forPageID id: UUID) {
+    func setPartCount(_ count: Int, forPageID id: UUID) {
+        guard (1...4).contains(count) else { return }
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
-              (state.pages[index].composition != nil) != enabled else { return }
+              (state.pages[index].composition?.partCount ?? 1) != count else { return }
         let page = state.pages[index]
         dismissedDetections.insert(id)
         detectedQuads[id] = nil
-        state.pages[index] = Page(
-            id: id, source: page.source, rotation: page.rotation, autoDetected: true,
-            ignoresSharedRatio: true, composition: enabled ? TwoPartComposition() : nil
-        )
+        if count == 1 {
+            let first = page.composition?.regions.first
+            state.pages[index] = Page(
+                id: id, source: page.source, rotation: page.rotation, crop: first?.boundingCrop,
+                autoDetected: true, quad: first, ignoresSharedRatio: true
+            )
+        } else {
+            let regions = page.composition?.regions ?? []
+            state.pages[index] = Page(
+                id: id, source: page.source, rotation: page.rotation, autoDetected: true,
+                ignoresSharedRatio: true,
+                composition: PartComposition(regions: regions, layout: page.composition?.layout ?? .vertical,
+                                             partCount: count)
+            )
+        }
         scheduleSave()
     }
 
     func addPart(_ region: DocumentQuad, forPageID id: UUID) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               let composition = state.pages[index].composition,
-              composition.regions.count < 2 else { return }
+              composition.regions.count < composition.partCount else { return }
         let region = region.clampedToUnitSquare()
         guard region.isConvex else { return }
         state.pages[index].composition?.regions.append(region)
@@ -879,7 +905,7 @@ final class DocumentStore {
         scheduleSave()
     }
 
-    func setPartLayout(_ layout: TwoPartComposition.Layout, forPageID id: UUID) {
+    func setPartLayout(_ layout: PartComposition.Layout, forPageID id: UUID) {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].composition != nil,
               state.pages[index].composition?.layout != layout else { return }
@@ -891,6 +917,23 @@ final class DocumentStore {
         guard let index = state.pages.firstIndex(where: { $0.id == id }),
               state.pages[index].composition != nil else { return }
         state.pages[index].composition?.regions.removeAll()
+        scheduleSave()
+    }
+
+    func cyclePartOrder(forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              let composition = state.pages[index].composition,
+              composition.regions.count > 1 else { return }
+        state.pages[index].composition?.cycleOrder()
+        scheduleSave()
+    }
+
+    func movePart(at part: Int, to slot: Int, forPageID id: UUID) {
+        guard let index = state.pages.firstIndex(where: { $0.id == id }),
+              var composition = state.pages[index].composition else { return }
+        composition.movePart(at: part, to: slot)
+        guard composition != state.pages[index].composition else { return }
+        state.pages[index].composition = composition
         scheduleSave()
     }
 
@@ -1113,14 +1156,6 @@ final class DocumentStore {
                 state.pages[index].composition = nil
                 state.pages[index].ignoresSharedRatio = true
                 detectedQuads[state.pages[index].id] = nil
-            }
-
-            let retained = pages.filter { previous in
-                previous.composition != nil && result.newSources[previous.id] != nil
-                    && !state.pages.contains(where: { current in current.source == previous.source })
-            }.map(\.source)
-            for source in retained where !state.retainedSources.contains(source) {
-                state.retainedSources.append(source)
             }
 
             ThumbnailProvider.shared.invalidate()

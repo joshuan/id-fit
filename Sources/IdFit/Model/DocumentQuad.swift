@@ -28,6 +28,15 @@ struct DocumentQuad: Codable, Equatable, Hashable, Sendable {
         }
     }
 
+    func contains(_ point: CGPoint) -> Bool {
+        let points = corners
+        return points.indices.allSatisfy { index in
+            let a = points[index]
+            let b = points[(index + 1) % 4]
+            return (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x) >= -0.000001
+        }
+    }
+
     init(topLeft: CGPoint, topRight: CGPoint, bottomRight: CGPoint, bottomLeft: CGPoint) {
         self.topLeft = topLeft
         self.topRight = topRight

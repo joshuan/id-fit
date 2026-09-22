@@ -26,6 +26,8 @@ enum DocumentEdgeDetector {
         var quad: DocumentQuad
         /// The upright box around it, used when straightening is off.
         var crop: CropRect
+        /// Separate documents, in reading order. Empty for a single document.
+        var regions: [DocumentQuad] = []
     }
 
     /// Blocking; call from a background task.
@@ -37,6 +39,20 @@ enum DocumentEdgeDetector {
     }
 
     static func detect(in image: CGImage) -> Detection? {
+        let rectangles = VNDetectRectanglesRequest()
+        rectangles.maximumObservations = 24
+        rectangles.minimumConfidence = 0.7
+        rectangles.minimumSize = 0.1
+        rectangles.minimumAspectRatio = 0.15
+        rectangles.quadratureTolerance = 25
+        let rectangleHandler = VNImageRequestHandler(cgImage: image, options: [:])
+        if (try? rectangleHandler.perform([rectangles])) != nil {
+            let regions = separateRegions(from: (rectangles.results ?? []).map { quad(from: $0) })
+            if regions.count > 1 {
+                return Detection(quad: regions[0], crop: regions[0].boundingCrop, regions: regions)
+            }
+        }
+
         let request = VNDetectDocumentSegmentationRequest()
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         do {
@@ -48,21 +64,59 @@ enum DocumentEdgeDetector {
         guard let observation = request.results?.first,
               observation.confidence >= minimumConfidence else { return nil }
 
+        let quad = quad(from: observation)
+        let crop = quad.boundingCrop
+        guard isUseful(crop) else { return nil }
+        return Detection(quad: quad, crop: crop)
+    }
+
+    private static func quad(from observation: VNRectangleObservation) -> DocumentQuad {
         // Vision measures from the bottom-left corner upwards; crops and quads
         // are measured from the top-left corner downwards.
         func flipped(_ point: CGPoint) -> CGPoint {
             CGPoint(x: point.x, y: 1 - point.y)
         }
-        let quad = DocumentQuad(
+        return DocumentQuad(
             topLeft: flipped(observation.topLeft),
             topRight: flipped(observation.topRight),
             bottomRight: flipped(observation.bottomRight),
             bottomLeft: flipped(observation.bottomLeft)
         ).clampedToUnitSquare()
 
-        let crop = quad.boundingCrop
-        guard isUseful(crop) else { return nil }
-        return Detection(quad: quad, crop: crop)
+    }
+
+    /// Keep outer document edges rather than their photos, borders or text
+    /// boxes. Overlapping alternatives from Vision describe the same part.
+    static func separateRegions(from candidates: [DocumentQuad]) -> [DocumentQuad] {
+        func box(_ quad: DocumentQuad) -> CGRect {
+            let crop = quad.boundingCrop
+            return CGRect(x: crop.x, y: crop.y, width: crop.width, height: crop.height)
+        }
+        let candidates = candidates.filter {
+            $0.isConvex && isUseful($0.boundingCrop)
+        }.sorted { box($0).width * box($0).height > box($1).width * box($1).height }
+        var regions: [DocumentQuad] = []
+        for candidate in candidates {
+            let bounds = box(candidate)
+            let overlaps = regions.contains { region in
+                let intersection = bounds.intersection(box(region))
+                return !intersection.isNull
+                    && intersection.width * intersection.height > bounds.width * bounds.height * 0.2
+            }
+            if !overlaps { regions.append(candidate) }
+        }
+
+        // Group by rows before sorting within a row. A fuzzy pairwise sort
+        // would not be transitive for three or more staggered documents.
+        var ordered: [DocumentQuad] = []
+        while let top = regions.min(by: { box($0).midY < box($1).midY }) {
+            let row = regions.filter {
+                abs(box($0).midY - box(top).midY) < min(box($0).height, box(top).height) * 0.5
+            }.sorted { box($0).midX < box($1).midX }
+            ordered.append(contentsOf: row)
+            regions.removeAll { row.contains($0) }
+        }
+        return Array(ordered.prefix(PartComposition.supportedCounts.upperBound))
     }
 
     // MARK: - Reading a lean out of the corners

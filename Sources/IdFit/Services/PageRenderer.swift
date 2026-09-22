@@ -6,6 +6,9 @@ import PDFKit
 /// Produces the final, export-ready content of a page: the source with its
 /// crop and rotation applied, at full resolution. Sources are only ever read.
 enum PageRenderer {
+    /// Raster resolution for PDF pages that need perspective or composition.
+    static let pdfRasterSize: CGFloat = 4000
+
     /// PDF sources stay vector — rasterizing a scanner's PDF would lose
     /// quality and bloat the file — so callers get the page itself plus the
     /// crop to apply while drawing.
@@ -75,7 +78,7 @@ enum PageRenderer {
             let url = folder.appendingPathComponent(page.source.file)
             guard FileManager.default.fileExists(atPath: url.path),
                   let rendered = ThumbnailProvider.shared.renderedImage(
-                      for: page.source, in: folder, maxPixel: 4000
+                      for: page.source, in: folder, maxPixel: pdfRasterSize
                   ) else { return nil }
             return rotate(crop(rendered, to: page.crop), by: page.rotation)
         }
@@ -99,7 +102,7 @@ enum PageRenderer {
     /// interactive updates cheap while applying exactly the same geometry.
     static func render(_ source: CGImage, for page: Page, outputRatio: Double?) -> CGImage? {
         if let composition = page.composition {
-            return TwoPartCompositor.render(source, composition: composition, rotation: page.rotation)
+            return PartCompositor.render(source, composition: composition, rotation: page.rotation)
         }
         let size = CGSize(width: source.width, height: source.height)
         if let quad = page.quad {
@@ -128,7 +131,7 @@ enum PageRenderer {
     /// rasterized at a size that keeps the print usable.
     private static func sourcePixels(for page: Page, at url: URL, in folder: URL) -> CGImage? {
         guard url.pathExtension.lowercased() == "pdf" else { return fullResolutionImage(at: url) }
-        return ThumbnailProvider.shared.renderedImage(for: page.source, in: folder, maxPixel: 4000)
+        return ThumbnailProvider.shared.renderedImage(for: page.source, in: folder, maxPixel: pdfRasterSize)
     }
 
     /// Full-size pixels with the EXIF orientation baked in, so crop rects —

@@ -24,14 +24,14 @@ struct PagePreviewKey: Hashable {
 /// overlay.
 ///
 /// Unlike the editor's own preview this key does follow corner edits and the
-/// tilt, including its crop, and both composition regions. The live result
+/// tilt, including its crop, and all composition regions. The live result
 /// redraws immediately; grid and filmstrip cells briefly debounce corner drags.
 struct PageThumbnailKey: Hashable {
     let preview: PagePreviewKey
     let quad: DocumentQuad?
     let tilt: Double
     let tiltedCrop: CropRect?
-    let composition: TwoPartComposition?
+    let composition: PartComposition?
     let outputRatio: Double?
 
     init(_ page: Page, outputRatio: Double? = nil, sourceRevision: Int = 0) {

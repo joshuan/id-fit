@@ -15,6 +15,7 @@ struct PageEditorView: View {
     let onClose: () -> Void
 
     @State private var preview: CGImage?
+    @State private var ordering = PartOrdering()
     /// Which pieces of guidance have already been said, kept where every window
     /// reads the same answer.
     @AppStorage(EditorHint.storageKey) private var readHints = ""
@@ -36,25 +37,38 @@ struct PageEditorView: View {
 
     private var hasRatio: Bool { store.state.cropAspectRatio != nil }
     private var isStraightened: Bool { page?.quad != nil }
-    private var isTwoPart: Bool { page?.composition != nil }
+    private var isComposed: Bool { page?.composition != nil }
 
     var body: some View {
         VStack(spacing: 0) {
             controlBar
             Divider()
-            if isTwoPart {
+            if isComposed {
                 compositionBar
                 Divider()
             }
             canvas
             Divider()
-            if page != nil, !isStraightened, !isTwoPart {
+            if page != nil, !isStraightened, !isComposed {
                 tiltBar
                 Divider()
             }
             PageFilmstrip(store: store, currentID: $pageID)
         }
         .task(id: page.map { PagePreviewKey($0, sourceRevision: store.sourceRevision) }) { await loadPreview() }
+        .background {
+            PartOrderKeyMonitor(
+                enabled: isComposed && !store.isLoading && !store.isExporting,
+                onPress: { ordering.begin() },
+                onRelease: {
+                    if ordering.end(), let page { store.cyclePartOrder(forPageID: page.id) }
+                },
+                onCancel: { ordering = PartOrdering() }
+            )
+        }
+        .onChange(of: pageID) { ordering = PartOrdering() }
+        .onChange(of: page?.composition?.partCount) { ordering = PartOrdering() }
+        .onChange(of: page?.composition?.regions.count) { ordering = PartOrdering() }
     }
 
     // MARK: - Controls
@@ -99,7 +113,7 @@ struct PageEditorView: View {
                 Label("Straighten", systemImage: "skew")
             }
             .toggleStyle(.button)
-            .disabled(isTwoPart)
+            .disabled(isComposed)
             .help("Map the document's four corners onto a true rectangle")
 
             Button("Auto-Straighten", systemImage: "wand.and.rays") {
@@ -107,8 +121,8 @@ struct PageEditorView: View {
                     Task { await store.redetectEdges(forPageIDs: [page.id]) }
                 }
             }
-            .disabled(store.isDetectingEdges || isTwoPart)
-            .help("Look for the document in this scan")
+            .disabled(store.isDetectingEdges)
+            .help("Find and straighten up to four parts in this scan")
 
             Button {
                 if let page { store.resetPage(forPageID: page.id) }
@@ -119,20 +133,27 @@ struct PageEditorView: View {
             .help("Clear this page's crop, straightening and rotation; keep the original untouched (Esc)")
 
             Menu {
-                Toggle("Combine Two Parts", isOn: Binding(
-                    get: { isTwoPart },
-                    set: { enabled in
-                        if let page { store.setTwoPartMode(enabled, forPageID: page.id) }
+                Picker("Number of Parts", selection: Binding(
+                    get: { page?.composition?.partCount ?? 1 },
+                    set: { count in
+                        if let page { store.setPartCount(count, forPageID: page.id) }
                     }
-                ))
-                .help("Draw two regions in order; straighten each and combine them on white")
+                )) {
+                    ForEach(1...4, id: \.self) { count in
+                        Text(count == 1 ? "1 Part" : "\(count) Parts").tag(count)
+                    }
+                }
+                Button("Cycle Part Order") {
+                    if let page { store.cyclePartOrder(forPageID: page.id) }
+                }
+                .disabled((page?.composition?.regions.count ?? 0) < 2)
 
                 Divider()
 
                 Button("Reset Crop") {
                     if let page { store.resetCrop(forPageID: page.id) }
                 }
-                .disabled(isTwoPart || isStraightened || (!hasRatio && page?.crop == nil))
+                .disabled(isComposed || isStraightened || (!hasRatio && page?.crop == nil))
 
                 Button("Apply This Framing to All Pages") {
                     if let page { store.applyCropToAllPages(fromPageID: page.id) }
@@ -148,7 +169,7 @@ struct PageEditorView: View {
                 Button(orientationButtonTitle) {
                     if let page { store.toggleCropOrientation(forPageID: page.id) }
                 }
-                .disabled(isTwoPart || !hasRatio || isStraightened)
+                .disabled(isComposed || !hasRatio || isStraightened)
                 .help("Use the document's shape the other way round on this page")
 
                 Divider()
@@ -175,13 +196,13 @@ struct PageEditorView: View {
 
     private var compositionBar: some View {
         HStack(spacing: 12) {
-            Label("Two Parts", systemImage: "rectangle.split.2x1")
+            Text("\(page?.composition?.partCount ?? 2) Parts")
                 .font(.callout.weight(.medium))
             Picker("Arrangement", selection: Binding(
                 get: { page?.composition?.layout ?? .vertical },
                 set: { layout in if let page { store.setPartLayout(layout, forPageID: page.id) } }
             )) {
-                ForEach(TwoPartComposition.Layout.allCases, id: \.self) { layout in
+                ForEach(PartComposition.Layout.allCases, id: \.self) { layout in
                     Text(layout.title).tag(layout)
                 }
             }
@@ -194,6 +215,13 @@ struct PageEditorView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             Spacer(minLength: 0)
+            Button {
+                if let page { store.cyclePartOrder(forPageID: page.id) }
+            } label: {
+                Label("Cycle Part Order", systemImage: "arrow.triangle.2.circlepath").labelStyle(.iconOnly)
+            }
+            .disabled((page?.composition?.regions.count ?? 0) < 2)
+            .help("Cycle part order (C). Hold C and click parts to choose their order.")
             Button("Redraw Parts") {
                 if let page { store.redrawParts(forPageID: page.id) }
             }
@@ -208,11 +236,14 @@ struct PageEditorView: View {
     }
 
     private var compositionInstruction: String {
-        switch page?.composition?.regions.count ?? 0 {
-        case 0: "Draw the first part, then the second."
-        case 1: "Draw the second part. The first stays first."
-        default: "Adjust each part's corners. Order follows your selection."
+        guard let composition = page?.composition else { return "" }
+        if ordering.isHeld {
+            return ordering.nextSlot < composition.regions.count
+                ? "Click part \(ordering.nextSlot + 1). Remaining numbers update automatically."
+                : "Order set. Release C to finish."
         }
+        if !composition.isComplete { return "Draw part \(composition.regions.count + 1) of \(composition.partCount)." }
+        return "C: cycle order. Hold C and click parts to set their order."
     }
 
     private var pageStepper: some View {
@@ -377,9 +408,16 @@ struct PageEditorView: View {
     private var content: some View {
         if let page, let size = displayedSize, let preview {
             if let composition = page.composition {
-                TwoPartCanvas(
+                PartsCanvas(
                     image: preview, displayedSize: size,
                     regions: composition.regions.map { DocumentQuadGeometry.rotated($0, by: page.rotation) },
+                    partCount: composition.partCount,
+                    isChoosingOrder: ordering.isHeld,
+                    onSelect: { part in
+                        if let slot = ordering.select(part: part, count: composition.regions.count), let part {
+                            store.movePart(at: part, to: slot, forPageID: page.id)
+                        }
+                    },
                     onAdd: { region in
                         store.addPart(DocumentQuadGeometry.rotated(region, by: -page.rotation), forPageID: page.id)
                     },
@@ -477,7 +515,7 @@ struct PageEditorView: View {
     }
 
     private var advice: EditorHint? {
-        guard let page, preview != nil, !isTwoPart else { return nil }
+        guard let page, preview != nil, !isComposed else { return nil }
         let hint: EditorHint = if isStraightened {
             .straighten
         } else if page.crop == nil {

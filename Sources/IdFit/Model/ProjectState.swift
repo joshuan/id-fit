@@ -63,8 +63,8 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
     /// A reset page stays outside the common format until framing is explicitly
     /// requested again. Reopening must not restore a crop the user rejected.
     var ignoresSharedRatio: Bool
-    /// Opt-in, per-page composition. Nil is the ordinary single-region editor.
-    var composition: TwoPartComposition?
+    /// Per-page composition, chosen manually or by explicit detection. Nil is the ordinary single-region editor.
+    var composition: PartComposition?
     /// Turns the document's aspect ratio on its side for this page.
     ///
     /// A passport photographed partly upright and partly sideways cannot be
@@ -92,7 +92,7 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         quad: DocumentQuad? = nil,
         tilt: Double = 0,
         ignoresSharedRatio: Bool = false,
-        composition: TwoPartComposition? = nil
+        composition: PartComposition? = nil
     ) {
         self.id = id
         self.source = source
@@ -123,7 +123,7 @@ struct Page: Codable, Equatable, Identifiable, Sendable {
         self.quad = try container.decodeIfPresent(DocumentQuad.self, forKey: .quad)
         self.tilt = try container.decodeIfPresent(Double.self, forKey: .tilt) ?? 0
         self.ignoresSharedRatio = try container.decodeIfPresent(Bool.self, forKey: .ignoresSharedRatio) ?? false
-        self.composition = try container.decodeIfPresent(TwoPartComposition.self, forKey: .composition)
+        self.composition = try container.decodeIfPresent(PartComposition.self, forKey: .composition)
     }
 
     /// Written by hand only so that an untilted page — which is nearly every
@@ -165,8 +165,8 @@ struct ProjectState: Codable, Equatable, Sendable {
     /// skipped when scanning, so an export saved next to the scans does not
     /// come back as a stack of new pages.
     var exportedFiles: [String]
-    /// Sources kept on disk after a page was replaced by its combined JPG.
-    /// They must not reappear as new pages when the folder is scanned again.
+    /// Legacy sources kept by earlier versions when compositions became
+    /// separate JPGs. Preserve these exclusions when opening old documents.
     var retainedSources: [SourceRef]
     /// Whether newly analysed pages are straightened.
     ///

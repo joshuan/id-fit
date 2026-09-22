@@ -52,18 +52,15 @@ enum OriginalsWriter {
                 || $0.composition?.isComplete == false
         }.map(\.source))
         var keeper: [SourceRef: Page] = [:]
-        for page in pages where selected.contains(page.id) && page.composition == nil && keeper[page.source] == nil {
+        for page in pages where selected.contains(page.id) && keeper[page.source] == nil {
             keeper[page.source] = page
         }
 
         var division = Division()
         for page in pages where selected.contains(page.id) {
-            if let composition = page.composition {
-                // A composition becomes a JPG beside the scan, which remains
-                // available if the user wants to draw the two parts again.
-                if composition.isComplete { division.spilled.append(page) }
-                continue
-            }
+            // Part count does not change ownership of the source file. Only
+            // duplicated pages need separate files for their different edits.
+            guard page.composition?.isComplete != false else { continue }
             if reserved.contains(page.source) {
                 if isEdited(page) { division.spilled.append(page) }
                 continue
@@ -117,15 +114,7 @@ enum OriginalsWriter {
                 blocked.insert(page.source.file)
                 continue
             }
-            let name: String
-            if page.composition != nil {
-                let stem = (page.source.file as NSString).deletingPathExtension
-                let pageSuffix = page.source.pdfPage.map { "-p\($0 + 1)" } ?? ""
-                let proposed = "\(stem)\(pageSuffix)-parts.jpg"
-                name = taken.contains(proposed) ? freeName(basedOn: proposed, avoiding: taken) : proposed
-            } else {
-                name = freeName(basedOn: page.source.file, avoiding: taken)
-            }
+            let name = freeName(basedOn: page.source.file, avoiding: taken)
             do {
                 result.newSources[page.id] = try writeCopy(
                     of: page, from: url, named: name, in: folder, sharedRatio: sharedRatio
@@ -207,14 +196,6 @@ enum OriginalsWriter {
     ) throws -> SourceRef {
         let destination = folder.appendingPathComponent(name)
 
-        if page.composition != nil {
-            guard let image = PageRenderer.image(for: page, in: folder, outputRatio: nil) else {
-                throw ImageWriter.WriteError.encodingFailed(name)
-            }
-            try ImageWriter.write(image, to: destination, type: .jpeg, inheritingMetadataFrom: url)
-            return SourceRef(file: name)
-        }
-
         if url.pathExtension.lowercased() == "pdf" {
             try writePDFCopy(
                 of: page, from: url, to: destination, in: folder, sharedRatio: sharedRatio
@@ -260,7 +241,7 @@ enum OriginalsWriter {
         // so it has to outlive the write.
         var sources: [PDFDocument] = []
 
-        if page.quad != nil || page.tilt != 0 {
+        if page.composition != nil || page.quad != nil || page.tilt != 0 {
             guard let rasterized = rasterizedPage(
                 for: page, in: folder, replacing: original, sharedRatio: sharedRatio
             ), let replacement = rasterized.page(at: 0) else {
@@ -310,8 +291,8 @@ enum OriginalsWriter {
     /// Cropping a PDF means narrowing its crop box — the page content stays
     /// untouched and fully vector.
     ///
-    /// Neither a warp nor a fine turn can be said in a crop box, so a page
-    /// carrying one is replaced by the corrected pixels. Only that page is:
+    /// A composition, warp or fine turn cannot be expressed by a crop box, so
+    /// a page carrying one is replaced by the corrected pixels. Only that page is:
     /// the rest of the file keeps its own content, and a file whose pages the
     /// document never mentions is not touched at all.
     private static func applyToPDF(
@@ -334,7 +315,7 @@ enum OriginalsWriter {
             let index = page.source.pdfPage ?? 0
             guard let pdfPage = document.page(at: index) else { continue }
 
-            if page.quad != nil || page.tilt != 0 {
+            if page.composition != nil || page.quad != nil || page.tilt != 0 {
                 guard let source = rasterizedPage(
                     for: page, in: folder, replacing: pdfPage, sharedRatio: sharedRatio
                 ), let replacement = source.page(at: 0) else {
@@ -397,12 +378,29 @@ enum OriginalsWriter {
         let box = pdfPage.bounds(for: .cropBox)
         guard box.width > 0, box.height > 0 else { return nil }
 
-        guard let size = warpedPageSize(for: page, displayed: displayedSize(of: pdfPage), sharedRatio: sharedRatio),
-              size.width >= 1, size.height >= 1,
-              let image = PageRenderer.image(
-                  for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
-              )
+        guard let image = PageRenderer.image(
+            for: page, in: folder, outputRatio: page.outputRatio(sharedRatio: sharedRatio)
+        )
         else { return nil }
+
+        let displayed = displayedSize(of: pdfPage)
+        let size: CGSize
+        if page.composition != nil {
+            // Keep the parts at their original physical scale, including the
+            // combined margins and gaps. Using the output image's aspect also
+            // avoids stretching it back to the source page's proportions.
+            guard let source = ThumbnailProvider.shared.renderedImage(
+                for: page.source, in: folder, maxPixel: PageRenderer.pdfRasterSize
+            ) else { return nil }
+            let pointsPerPixel = max(displayed.width, displayed.height) / CGFloat(max(source.width, source.height))
+            size = CGSize(width: CGFloat(image.width) * pointsPerPixel,
+                          height: CGFloat(image.height) * pointsPerPixel)
+        } else {
+            guard let warped = warpedPageSize(for: page, displayed: displayed, sharedRatio: sharedRatio)
+            else { return nil }
+            size = warped
+        }
+        guard size.width >= 1, size.height >= 1 else { return nil }
 
         let data = NSMutableData()
         var mediaBox = CGRect(origin: .zero, size: size)

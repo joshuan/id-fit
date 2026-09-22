@@ -56,12 +56,12 @@ import Testing
         return folder
     }
 
-    @Test(arguments: TwoPartComposition.Layout.allCases)
-    func eachRegionIsRectifiedAndPlacedInDrawingOrderOnWhite(_ layout: TwoPartComposition.Layout) throws {
+    @Test(arguments: PartComposition.Layout.allCases)
+    func eachRegionIsRectifiedAndPlacedInDrawingOrderOnWhite(_ layout: PartComposition.Layout) throws {
         // Deliberately draw the bottom part first: geometric position cannot
         // decide the ordering of the result.
-        let composition = TwoPartComposition(regions: [bottom, top], layout: layout)
-        let image = try #require(TwoPartCompositor.render(scan(), composition: composition, rotation: 0))
+        let composition = PartComposition(regions: [bottom, top], layout: layout)
+        let image = try #require(PartCompositor.render(scan(), composition: composition, rotation: 0))
         let first = color(image, x: layout == .vertical ? 0.5 : 0.25, y: layout == .vertical ? 0.25 : 0.5)
         let second = color(image, x: layout == .vertical ? 0.5 : 0.75, y: layout == .vertical ? 0.75 : 0.5)
         #expect(first.b > 230 && first.r < 25 && first.g < 25)
@@ -73,8 +73,8 @@ import Testing
     }
 
     @Test func rotatingPartsDoesNotReverseTheirOrder() throws {
-        let image = try #require(TwoPartCompositor.render(
-            scan(), composition: TwoPartComposition(regions: [top, bottom]), rotation: 180
+        let image = try #require(PartCompositor.render(
+            scan(), composition: PartComposition(regions: [top, bottom]), rotation: 180
         ))
         let first = color(image, x: 0.5, y: 0.25)
         let second = color(image, x: 0.5, y: 0.75)
@@ -83,30 +83,28 @@ import Testing
     }
 
     @Test func incompleteOrCrossedRegionsCannotBeExportedAsAWholeScan() throws {
-        #expect(TwoPartCompositor.render(scan(), composition: TwoPartComposition(regions: [top]), rotation: 0) == nil)
+        #expect(PartCompositor.render(scan(), composition: PartComposition(regions: [top]), rotation: 0) == nil)
         var crossed = top
         crossed.topLeft = top.bottomRight
         crossed.bottomRight = top.topLeft
         #expect(!crossed.isConvex)
-        #expect(TwoPartCompositor.render(scan(), composition: TwoPartComposition(regions: [crossed, bottom]), rotation: 0) == nil)
+        #expect(PartCompositor.render(scan(), composition: PartComposition(regions: [crossed, bottom]), rotation: 0) == nil)
     }
 
-    @Test func modeIsExplicitAndDetectionLeavesItAlone() async throws {
+    @Test func manualModeAndOrderSurviveReopening() async throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let store = DocumentStore()
         await store.openFolder(folder)
         let id = store.state.pages[0].id
         #expect(store.state.pages[0].composition == nil)
-        store.setTwoPartMode(true, forPageID: id)
+        store.setPartCount(2, forPageID: id)
         store.addPart(bottom, forPageID: id)
         store.addPart(top, forPageID: id)
         store.addPart(top, forPageID: id)
         store.setPartLayout(.horizontal, forPageID: id)
         let page = store.state.pages[0]
         #expect(page.composition?.regions == [bottom, top])
-        await store.redetectEdgesOnAllPages()
-        #expect(store.state.pages[0] == page)
         store.saveDocument()
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
@@ -122,7 +120,7 @@ import Testing
         let store = DocumentStore()
         await store.openFolder(folder)
         let id = store.state.pages[0].id
-        store.setTwoPartMode(true, forPageID: id)
+        store.setPartCount(2, forPageID: id)
         store.addPart(top, forPageID: id)
         store.addPart(bottom, forPageID: id)
         let before = store.state.pages[0]
@@ -146,7 +144,7 @@ import Testing
             try? FileManager.default.removeItem(at: folder)
             try? FileManager.default.removeItem(at: destination)
         }
-        let page = Page(source: SourceRef(file: "scan.png"), composition: TwoPartComposition(regions: [top, bottom]))
+        let page = Page(source: SourceRef(file: "scan.png"), composition: PartComposition(regions: [top, bottom]))
         let result = try FileExporter.export(pages: [page], folder: folder, to: destination)
         #expect(result.writtenFiles == ["001.jpg"])
         let file = destination.appendingPathComponent("001.jpg")
@@ -158,26 +156,32 @@ import Testing
         #expect(color(image, x: 0.005, y: 0.005).g > 245)
     }
 
-    @Test func applyingACompositionKeepsTheScanAndReopensAsOnePage() async throws {
+    @Test func applyingACompositionReplacesTheScanAndBacksUpTheOriginal() async throws {
         let folder = try makeFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
         let original = try Data(contentsOf: folder.appendingPathComponent("scan.png"))
         let store = DocumentStore()
         await store.openFolder(folder)
         let id = store.state.pages[0].id
-        store.setTwoPartMode(true, forPageID: id)
+        store.setPartCount(2, forPageID: id)
         store.addPart(top, forPageID: id)
         store.addPart(bottom, forPageID: id)
         await store.applyToOriginals(pageIDs: [id], makeBackup: true)
         #expect(store.lastError == nil)
-        #expect(store.state.pages[0].source.file == "scan-parts.jpg")
+        #expect(store.state.pages[0].source.file == "scan.png")
         #expect(store.state.pages[0].composition == nil)
-        #expect(store.lastApplyResult?.backupFolder == nil)
-        #expect(try Data(contentsOf: folder.appendingPathComponent("scan.png")) == original)
+        #expect(store.lastApplyResult?.changedFiles == ["scan.png"])
+        #expect(store.lastApplyResult?.createdFiles.isEmpty == true)
+        #expect(try Data(contentsOf: folder.appendingPathComponent(".id-fit-originals/scan.png")) == original)
+        let result = try #require(PageRenderer.fullResolutionImage(at: folder.appendingPathComponent("scan.png")))
+        #expect(color(result, x: 0.5, y: 0.25).r > 230)
+        #expect(color(result, x: 0.5, y: 0.75).b > 230)
+        #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("scan-parts.jpg").path))
+        #expect(store.state.retainedSources.isEmpty)
         let reopened = DocumentStore()
         await reopened.openFolder(folder)
         #expect(reopened.state.pages.count == 1)
-        #expect(reopened.state.pages[0].source.file == "scan-parts.jpg")
+        #expect(reopened.state.pages[0].source.file == "scan.png")
         #expect(!OriginalsWriter.isEdited(reopened.state.pages[0]))
     }
 
@@ -187,7 +191,7 @@ import Testing
         let store = DocumentStore()
         await store.openFolder(folder)
         let id = store.state.pages[0].id
-        store.setTwoPartMode(true, forPageID: id)
+        store.setPartCount(2, forPageID: id)
         store.addPart(top, forPageID: id)
         store.addPart(bottom, forPageID: id)
         let page = store.state.pages[0]

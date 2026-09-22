@@ -64,7 +64,7 @@ struct PageCell: View {
                     .clipShape(RoundedRectangle(cornerRadius: layout.cornerRadius))
                     .padding(4)
                 } else if let composition = page.composition, !composition.isComplete {
-                    Text(composition.regions.isEmpty ? "Draw part 1, then part 2" : "Draw part 2")
+                    Text("Draw part \(composition.regions.count + 1) of \(composition.partCount)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

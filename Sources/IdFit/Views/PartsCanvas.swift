@@ -1,10 +1,13 @@
 import SwiftUI
 
-/// Both outlines remain visible; numbering is creation order, never position.
-struct TwoPartCanvas: View {
+/// All outlines remain visible; numbering follows the chosen output order.
+struct PartsCanvas: View {
     let image: CGImage
     let displayedSize: CGSize
     let regions: [DocumentQuad]
+    let partCount: Int
+    let isChoosingOrder: Bool
+    let onSelect: (Int?) -> Void
     let onAdd: (DocumentQuad) -> Void
     let onChange: (Int, DocumentQuad) -> Void
 
@@ -17,7 +20,7 @@ struct TwoPartCanvas: View {
         let corner: DocumentQuad.Corner
     }
 
-    private let canvasSpace = "twoPartCanvas"
+    private let canvasSpace = "partsCanvas"
 
     var body: some View {
         GeometryReader { geometry in
@@ -52,7 +55,7 @@ struct TwoPartCanvas: View {
                         .allowsHitTesting(false)
                 }
 
-                if regions.count < 2 {
+                if regions.count < partCount {
                     Color.white.opacity(0.001)
                         .frame(width: frame.width, height: frame.height)
                         .contentShape(Rectangle())
@@ -69,7 +72,7 @@ struct TwoPartCanvas: View {
 
                 ForEach(regions.indices, id: \.self) { index in
                     let region = regions[index]
-                    let color: Color = index == 0 ? .cyan : .orange
+                    let color: Color = [.cyan, .orange, .green, .pink][index % 4]
                     QuadShape(points: region.corners.map { point($0, in: frame) })
                         .stroke(color, lineWidth: 2)
                         .allowsHitTesting(false)
@@ -106,6 +109,19 @@ struct TwoPartCanvas: View {
                     LoupeView(image: image, focus: region[handle.corner], imageSize: frame.size,
                               guides: region.neighbours(of: handle.corner))
                         .position(LoupeView.position(awayFrom: handle.corner, in: frame))
+                        .allowsHitTesting(false)
+                }
+
+                if isChoosingOrder {
+                    Color.white.opacity(0.001)
+                        .frame(width: frame.width, height: frame.height)
+                        .contentShape(Rectangle())
+                        .offset(x: frame.minX, y: frame.minY)
+                        .gesture(SpatialTapGesture(coordinateSpace: .named(canvasSpace)).onEnded { value in
+                            let normalized = CGPoint(x: (value.location.x - frame.minX) / frame.width,
+                                                     y: (value.location.y - frame.minY) / frame.height)
+                            onSelect(regions.indices.first { regions[$0].contains(normalized) })
+                        })
                 }
             }
         }

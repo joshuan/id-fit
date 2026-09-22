@@ -64,7 +64,19 @@ struct WorkspaceView: View {
             hasTargets: !actionTargets.isEmpty,
             trashTitle: trashTitle,
             rotate: { store.rotatePages(ids: actionTargets, by: $0) },
-            moveToTrash: { moveToTrash(actionTargets) }
+            moveToTrash: { moveToTrash(actionTargets) },
+            partCount: editedPage.flatMap { id in
+                store.state.pages.first(where: { $0.id == id }).map { $0.composition?.partCount ?? 1 }
+            },
+            setPartCount: { count in
+                if let editedPage { store.setPartCount(count, forPageID: editedPage) }
+            },
+            canCycleParts: editedPage.flatMap { id in
+                store.state.pages.first(where: { $0.id == id })?.composition?.regions.count
+            }.map { $0 > 1 } ?? false,
+            cyclePartOrder: {
+                if let editedPage { store.cyclePartOrder(forPageID: editedPage) }
+            }
         ))
         .sheet(isPresented: $isEditingCustomRatio) {
             CustomRatioSheet(current: store.state.cropAspectRatio) { ratio in
@@ -184,6 +196,14 @@ struct WorkspaceView: View {
                 : "Write this folder's pages and crops to a document")
         }
         ToolbarItem {
+            Button("Apply…", systemImage: "checkmark.circle") {
+                confirmApply()
+            }
+            .labelStyle(.titleAndIcon)
+            .disabled(!hasEdits || store.isDetectingEdges || store.isExporting || store.isLoading)
+            .help("Apply all changes to the original files, including combined parts")
+        }
+        ToolbarItem {
             Button("Export…", systemImage: "square.and.arrow.up") {
                 store.isPresentingExport = true
             }
@@ -202,11 +222,6 @@ struct WorkspaceView: View {
                     get: { store.state.straightenByDefault },
                     set: { store.setStraightenByDefault($0) }
                 ))
-                Divider()
-                Button("Apply Changes to Original Files…", role: .destructive) {
-                    confirmApply()
-                }
-                .disabled(!hasEdits)
             } label: {
                 Label("More", systemImage: "ellipsis.circle")
             }
